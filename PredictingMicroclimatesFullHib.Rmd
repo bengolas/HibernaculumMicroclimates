@@ -1,0 +1,818 @@
+---
+title: "Predicting within hibernaculum microclimates"
+author: "Ben Golas"
+date: "8/27/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+rm(list=ls())
+gc()
+
+##########################
+# # Author: Benjamin Golas
+# # Coauthors: Colleen Webb, Carl Herzog, Casey Pendergast, Angette Pastuszek, Paul Cryan
+# # Predicting hibernating bat niche range in spatiotemporally complex hibernacula
+```
+
+```{r data logger import, echo=FALSE, warning=FALSE, message=FALSE}
+##########
+#This script is for importation of iButton data into a usable format.
+##########
+
+#Setting up logger info as in initial report
+library(tidyverse)
+library(lubridate)
+library(reshape2)
+library(ggplot2)
+library(schoolmath)
+library(plyr)
+library(gridExtra)
+library(rjags)
+library(cowplot)
+
+#Set the working directory for the folder of interest on your computer
+setwd("C:/Users/bengo/Documents/WNS/2017Barton/Barton2017")
+getwd()
+#Identify your iButton files in RHreads
+#Not including faulty loggers 28,33,80
+
+RHreads <- c("003_RH.csv","004_RH.csv","005_RH.csv","006_RH.csv","007_RH.csv",
+             "013_RH.csv","020_RH.csv","022_RH.csv","023_RH.csv","026_RH.csv","027_RH.csv",
+             "031_RH.csv","038_RH.csv","040_RH.csv","045_RH.csv",
+             "046_RH.csv","050_RH.csv","058_RH.csv","064_RH.csv","065_RH.csv","067_RH.csv",
+             "068_RH.csv","072_RH.csv","074_RH.csv","075_RH.csv","078_RH.csv",
+             "088_RH.csv","094_RH.csv","096_RH.csv","101_RH.csv","103_RH.csv","110_RH.csv",
+             "116_RH.csv","117_RH.csv")
+
+Treads <- c("003_T.csv","004_T.csv","005_T.csv","006_T.csv","007_T.csv",
+            "013_T.csv","020_T.csv","022_T.csv","023_T.csv","026_T.csv","027_T.csv",
+            "031_T.csv","038_T.csv","040_T.csv","045_T.csv",
+            "046_T.csv","050_RH.csv","058_T.csv","064_T.csv","065_T.csv","067_T.csv",
+            "068_T.csv","072_T.csv","074_T.csv","075_T.csv","078_T.csv",
+            "088_T.csv","094_T.csv","096_T.csv","101_T.csv","103_T.csv","110_T.csv",
+            "116_T.csv","117_T.csv")
+
+
+
+IDs <- as.numeric(gsub("_RH.csv","",RHreads))
+
+setwd("C:/Users/bengo/Documents/WNS/2017Barton")
+
+#Load data that is cleaned in DataCleaning file
+setwd("C:/Users/bengo/Documents/WNS/2017Barton/DataCleaning")
+load("df.trim") #Data for 2017-18 data loggers
+load("dwt") #Data files for 2017-18 averaged outside data
+load("dwh")
+load("dww")
+load("df.pred.trim") #Data for 2018-19 data loggers
+load("dwt.18") #Data for 2018-19 averaged outside data
+load("dwh.18")
+load("dww.18")
+load("Temp14_19")
+load("Outside.mean.daily")
+
+# Make sure all time points are present and equally spaced
+test <- as.data.frame(cbind(unique(df.trim$Time),1:length(unique(df.trim$Time))))
+# ggplot(test,aes(as_datetime(V1, format="%Y-%m-%d %H"),as.numeric(as.character(V2)),group=1)) + geom_line()
+ID.drum <- c("020","022","023","026","027","028","031","033")
+ID.upper <- c("003","004","005","006","007","008","013","038","094","096","101","103","110","116","117")
+ID.lower <- c("040","045","046","050","058","064","065","067","068","072","074","075","078","080","088")
+df.trim$Room <- NA
+df.trim$Room[which(match(df.trim$ID,ID.drum)!="NA")] <- "drum"
+df.trim$Room[which(match(df.trim$ID,ID.upper)!="NA")] <- "upper"
+df.trim$Room[which(match(df.trim$ID,ID.lower)!="NA")] <- "lower"
+df.trim$Drum <- 0
+df.trim$Drum[which(match(df.trim$ID,ID.drum)!="NA")] <- 1
+df.trim$Upper <- 0
+df.trim$Upper[which(match(df.trim$ID,ID.upper)!="NA")] <- 1
+df.trim$Lower <- 0
+df.trim$Lower[which(match(df.trim$ID,ID.lower)!="NA")] <- 1
+
+# ggplot(df.drum,aes(Time,Temp))+geom_line(aes(group=iButton, color=Depth)) + 
+  # theme_minimal() + scale_color_viridis_c()
+
+
+
+RHreads <- c("020_RH.csv", "028_RH.csv", "040_RH.csv")
+
+Treads <- c("020_T.csv", "028_T.csv", "040_T.csv")
+
+IDs.18 <- as.numeric(gsub("_RH.csv","",RHreads))
+
+#Below will plot line graphs for each iButton separately.
+# ggplot(df.pred.trim,aes(Time,Temp))+geom_line(aes(group=iButton,color=ID)) + theme_minimal()
+# ggplot(df.trim,aes(Time,Temp))+geom_line(aes(group=iButton,color=Depth)) +
+#   theme_minimal() + ylim(-10,25)
+# ggplot(df.trim,aes(Time,RH))+geom_line(aes(group=iButton,color=Depth)) + theme_minimal()
+
+df.RH.test <- df.trim[df.trim$Time>="2017-12-01 00" & df.trim$Time<="2018-04-15 22",]
+# ggplot(df.RH.test, aes(Time,RH)) + geom_line(aes(group=iButton,color=Depth)) +
+                          # theme_minimal() + ylim(40,120)
+
+
+# ggplot(df.RH.test,aes(Time,(RH/100)*0.611*exp(17.503*Temp/(Temp+240.97))))+geom_line(aes(group=iButton,color=Depth)) + theme_minimal() + ylim(-0.5,1.4)
+# #Make sure all time points are present and equally spaced
+# test <- as.data.frame(cbind(unique(df.pred.trim$Time),1:length(unique(df.pred.trim$Time))))
+# ggplot(test,aes(as_datetime(V1),as.numeric(as.character(V2)),group=1)) + geom_line()  
+
+
+setwd("C:/Users/bengo/Documents/WNS/2017Barton")
+df.location <- read.csv("LocationInfo.csv")
+df.location <- df.location[match(IDs,df.location$iButton),]
+df.location <- subset(separate(df.location,"Approx..Elevation.Above.Lake.Champlain",into=c("a1","a2"),sep="/"))
+df.location$a1 <- as.numeric(df.location$a1)
+df.location$a2 <- as.numeric(df.location$a2)
+df.location$Elevation <- rowMeans(df.location[,4:5],na.rm=TRUE)
+
+df.location$is.MYLU <- ifelse(grepl("MYLU",df.location$Bats),1,0)
+df.location$is.MYSO <- ifelse(grepl("MYSO",df.location$Bats),1,0)
+df.location$is.MYLE <- ifelse(grepl("MYLE",df.location$Bats),1,0)
+
+df.location$Elevation[which(df.location$iButton==88)] <- 1325
+df.location$Elevation[which(df.location$iButton==20)] <- 1321
+
+
+xycoords <- cbind(IDs,subset(df.location, select=c(x_coord,y_coord,Elevation)))
+
+df.location <- subset(df.location, select = -c(x_coord,y_coord,a1,a2,Bats,Region))
+
+#Suspect some logger depths are incorrectly recorded
+
+
+
+df.trim <- df.trim[which(as.numeric(as.character(df.trim$ID)) %in% IDs),]
+df.trim$Elevation <- rep(df.location$Elevation, length(df.trim[,1])/length(df.location[,1]))
+
+# #Remove problematic loggers
+# 
+# rejects <- c("28","33","80")
+# df.location <- df.location[-which(as.numeric(df.location$iButton %in% rejects)==1),]
+
+
+#Clean data to remove unusable values
+#Reset values associated with temperature errors
+for(i in 1:5){
+df.trim$RH[which(df.trim$Temp>=20)] <- df.trim$RH[(which(df.trim$Temp>=20)-length(unique(df.trim$ID)))] 
+df.trim$RH[which(df.trim$Temp<=-6)] <- df.trim$RH[(which(df.trim$Temp<=-6)-length(unique(df.trim$ID)))]
+}
+#Reset erroneous values
+df.trim$RH <- df.trim$RH/100
+df.trim$RH[which(df.trim$Time <= "2017-11-30 22")] <- 1 #100% RH in warmer seasons
+df.trim$RH[which(df.trim$Time >= "2018-04-20 00")] <- 1
+df.trim$RH[which(df.trim$RH>=1)] <- 1 #Set truncate measurements to be realistic
+df.trim$RH[which(df.trim$RH<=0)] <- 0 #i.e. >100% = 100%, <0% = 0%
+
+#Remove errored temperature values
+for(i in 1:50){
+df.trim$Temp[which(df.trim$Temp>=20)] <- df.trim$Temp[(which(df.trim$Temp>=20)-length(unique(df.trim$ID)))] 
+df.trim$Temp[which(df.trim$Temp<=-6)] <- df.trim$Temp[(which(df.trim$Temp<=-6)-length(unique(df.trim$ID)))] 
+
+df.trim$RH[which(df.trim$RH<=.4)] <- df.trim$RH[(which(df.trim$RH<=.4)-length(unique(df.trim$ID)))] 
+}
+
+
+df.trim$RH[which(df.trim$Time >= "2017-12-15 22" & df.trim$Time <= "2018-03-15" & df.trim$Temp>=8)] <- df.trim$RH[which(df.trim$Time >= "2017-11-30 22" & df.trim$Time <= "2018-03-31" & df.trim$Temp>=9)-length(unique(df.trim$ID))]
+df.trim$Temp[which(df.trim$Time >= "2017-12-15 22" & df.trim$Time <= "2018-03-15" & df.trim$Temp>=8)] <- df.trim$Temp[which(df.trim$Time >= "2017-12-15 22" & df.trim$Time <= "2018-03-15" & df.trim$Temp>=8)-length(unique(df.trim$ID))]
+
+T.tormin <- 2
+
+df.microclim <- df.trim[which(df.trim$Time >= "2017-08-16 00" & df.trim$Time <= "2018-05-14 22"),]
+
+df.microclim$d.WVP.bat <- 0.611*exp(17.503*pmax(df.microclim$Temp,T.tormin)/(pmax(df.microclim$Temp,T.tormin)+240.97)) - df.microclim$RH*0.611*exp((17.503*df.microclim$Temp)/(df.microclim$Temp+240.97))
+
+df.microclim$d.WVP.a <- 0.611*exp((17.503*df.microclim$Temp)/(df.microclim$Temp+240.97)) - df.microclim$RH*0.611*exp((17.503*df.microclim$Temp)/(df.microclim$Temp+240.97))
+
+ggplot(df.trim,aes(Time,Temp))+ geom_line(aes(group=iButton,color=Depth)) + 
+  theme_classic() + xlab("Time") + ylab("Temperature (degrees C)") +
+  scale_color_gradientn(colors=ghibli_palettes$PonyoMedium,
+                        name="Elevation")
+ggplot(df.trim,aes(Time,RH))+geom_line(aes(group=iButton,color=Depth)) + 
+  theme_classic() + xlab("Time") + ylab("Relative Humidity (%)") +
+  scale_color_gradientn(colors=ghibli_palettes$PonyoMedium,
+                        name="Elevation")
+
+
+
+df.location$T.mean <- with(df.microclim,tapply(Temp,list(ID=ID),mean))
+df.location$T.sd <- with(df.microclim,tapply(Temp,list(ID=ID),sd))
+df.location$T.max <- with(df.microclim,tapply(Temp,list(ID=ID),max))
+df.location$T.min <- with(df.microclim,tapply(Temp,list(ID=ID),min))
+df.location$T.median <- with(df.microclim,tapply(Temp,list(ID=ID),median))
+# df.location$RH.mean <- with(df.microclim[which(df.microclim$Time >= "2017-12-01 00" & df.microclim$Time <= "2018-04-15 22"),],tapply(RH,list(ID=ID),mean))
+# df.location$RH.sd <- with(df.microclim[which(df.microclim$Time >= "2017-12-01 00" & df.microclim$Time <= "2018-04-15 22"),],tapply(RH,list(ID=ID),sd))
+# df.location$RH.min <- with(df.microclim[which(df.microclim$Time >= "2017-12-01 00" & df.microclim$Time <= "2018-04-15 22"),],tapply(RH,list(ID=ID),min))
+# df.location$RH.median <- with(df.microclim[which(df.microclim$Time >= "2017-12-01 00" & df.microclim$Time <= "2018-04-15 22"),],tapply(RH,list(ID=ID),median))
+df.location$T.Sept.mean <- with(df.microclim[which(df.microclim$Time >= "2017-09-01 00" & df.microclim$Time <= "2017-09-30 22"),],tapply(Temp,list(ID=ID),mean))
+df.location$T.Sept.sd <- with(df.microclim[which(df.microclim$Time >= "2017-09-01 00" & df.microclim$Time <= "2017-09-30 22"),],tapply(Temp,list(ID=ID),sd))
+df.location$T.Oct.mean <- with(df.microclim[which(df.microclim$Time >= "2017-10-01 00" & df.microclim$Time <= "2017-10-31 22"),],tapply(Temp,list(ID=ID),mean))
+df.location$T.Oct.sd <- with(df.microclim[which(df.microclim$Time >= "2017-10-01 00" & df.microclim$Time <= "2017-10-31 22"),],tapply(Temp,list(ID=ID),sd))
+df.location$T.Nov.mean <- with(df.microclim[which(df.microclim$Time >= "2017-11-01 00" & df.microclim$Time <= "2017-11-30 22"),],tapply(Temp,list(ID=ID),mean))
+df.location$T.Nov.sd <- with(df.microclim[which(df.microclim$Time >= "2017-11-01 00" & df.microclim$Time <= "2017-11-30 22"),],tapply(Temp,list(ID=ID),sd))
+# df.location$d.WVP.a.mean <- with(df.microclim,tapply(d.WVP.a,list(ID=ID),mean))
+# df.location$d.WVP.a.sd <- with(df.microclim,tapply(d.WVP.a,list(ID=ID),sd))
+# df.location$d.WVP.a.median <- with(df.microclim,tapply(d.WVP.a,list(ID=ID),median))
+# df.location$d.WVP.a.min <- with(df.microclim,tapply(d.WVP.a,list(ID=ID),min))
+df.location$d.WVP.a.winter.mean <- with(df.microclim[which(df.microclim$Time >= "2017-12-01 00" & df.microclim$Time <= "2018-04-15 22"),],tapply(d.WVP.a,list(ID=ID),mean))
+df.location$d.WVP.a.winter.sd <- with(df.microclim[which(df.microclim$Time >= "2017-12-01 00" & df.microclim$Time <= "2018-04-15 22"),],tapply(d.WVP.a,list(ID=ID),sd))
+df.location$d.WVP.a.winter.min <- with(df.microclim[which(df.microclim$Time >= "2017-12-01 00" & df.microclim$Time <= "2018-04-15 22"),],tapply(d.WVP.a,list(ID=ID),min))
+df.location$d.WVP.bat.mean <- with(df.microclim,tapply(d.WVP.bat,list(ID=ID),mean))
+df.location$d.WVP.a.winter.median <- with(df.microclim[which(df.microclim$Time >= "2017-12-01 00" & df.microclim$Time <= "2018-04-15 22"),],tapply(d.WVP.a,list(ID=ID),median))
+
+df.location$Elevation.scaled <- (df.location$Elevation-mean(df.location$Elevation))/sd(df.location$Elevation)
+
+
+
+df.location$Room <- "NA"
+df.location$Room[which(match(df.trim$ID[1:length(unique(df.location$iButton))],ID.drum)!="NA")] <- "Drum"
+df.location$Room[which(match(df.trim$ID[1:length(unique(df.location$iButton))],ID.upper)!="NA")] <- "Upper"
+df.location$Room[which(match(df.trim$ID[1:length(unique(df.location$iButton))],ID.lower)!="NA")] <- "Lower"
+```
+
+```{r shortest path}
+
+# # Calculate 3-dimensional data logger network
+
+xycoords.midpoint <- rbind(xycoords, 
+                           c("midpoint",2660,2430, (xycoords$Elevation[which(xycoords$IDs==94)] + xycoords$Elevation[which(xycoords$IDs==88)])/2),
+                           c("upper", mean(subset(xycoords$x_coord, subset = IDs %in% c(101, 103, 110, 116, 117))), mean(subset(xycoords$y_coord, subset = IDs %in% c(101, 103, 110, 116, 117))), mean(subset(xycoords$Elevation, subset = IDs %in% c(101, 103, 110, 116, 117)))),
+                           c("lower", mean(subset(xycoords$x_coord, subset = IDs %in% c(72, 74, 75, 78, 88))), mean(subset(xycoords$y_coord, subset = IDs %in% c(72, 74, 75, 78, 88))), mean(subset(xycoords$Elevation, subset = IDs %in% c(72, 74, 75, 78, 88)))),
+                           c("drum", mean(subset(xycoords$x_coord, subset = IDs %in% c(27, 31))), mean(subset(xycoords$y_coord, subset = IDs %in% c(27, 31))), mean(subset(xycoords$Elevation, subset = IDs %in% c(27, 31)))),
+                           c("out.warm",3450,1500,1670),
+                           c("out.cold",1600,2300, xycoords$Elevation[which(xycoords$IDs==40)])
+                           )
+
+
+xycoords.midpoint$x_coord <- as.numeric(as.character(xycoords.midpoint$x_coord))
+xycoords.midpoint$y_coord <- as.numeric(as.character(xycoords.midpoint$y_coord))
+xycoords.midpoint$Elevation <- as.numeric(as.character(xycoords.midpoint$Elevation))
+
+
+contacts <- read.csv("LoggerNetwork.csv")
+rownames(contacts) <- contacts[,1]
+contacts <- contacts[,-1]
+colnames(contacts) <- rownames(contacts)
+
+logger.net <- NA
+
+for(i in 1:length(contacts[1,])){
+  for(j in 1:length(contacts[,1])){
+    contacts[i,j] <- ifelse(contacts[i,j]=="NA","NA", sqrt((xycoords.midpoint$x_coord[j]-xycoords.midpoint$x_coord[i])^2 + (xycoords.midpoint$y_coord[j]-xycoords.midpoint$y_coord[i])^2 + (xycoords.midpoint$Elevation[j]-xycoords.midpoint$Elevation[i])^2))
+    
+    logger.net <- rbind(logger.net,c(rownames(contacts)[i],colnames(contacts)[j],contacts[i,j]))
+  }
+}
+logger.net <- as.data.frame(logger.net)
+colnames(logger.net) <- c("from","to","weight")
+logger.net$weight <- as.numeric(as.character(logger.net$weight))
+
+logger.net <- logger.net[-which(is.na(logger.net$weight)),]
+
+
+library(igraph)
+xycoords.midpoint$IDs <- rownames(contacts)
+xycoords.midpoint$is.MYLU <- append(df.location$is.MYLU,c(2,3,3,3,4,4))
+net <- graph.data.frame(logger.net,xycoords.midpoint,directed=F)
+xycoords.midpoint$color <- "#D98594"
+xycoords.midpoint$color[which(xycoords.midpoint$is.MYLU==1)] <- "#86C2DA"
+xycoords.midpoint$color[which(xycoords.midpoint$is.MYLU==2)] <- "red"
+xycoords.midpoint$color[which(xycoords.midpoint$is.MYLU==3)] <- "blue"
+xycoords.midpoint$color[which(xycoords.midpoint$is.MYLU==4)] <- "dark green"
+V(net)$color <- xycoords.midpoint$color
+
+plot(net, layout=as.matrix(-xycoords.midpoint[,c("x_coord","y_coord")]), 
+     edge.curved=0,
+     vertex.color=V(net)$color,
+     vertex.size=10,
+     vertex.label=NA)
+
+dist.path <- matrix(NA,ncol=ncol(contacts),nrow=nrow(contacts))
+colnames(dist.path) <- colnames(contacts)
+rownames(dist.path) <- colnames(dist.path)
+
+
+for(i in 1:nrow(dist.path)){
+  for(j in 1:ncol(dist.path)){
+    dist.path[i,j] <- distances(net,v=rownames(dist.path)[i],to=colnames(dist.path)[j])
+  }
+}
+
+for(i in 1:length(df.location$d.warm)){
+  df.location$d.warm[i] <- distances(net,v=rownames(dist.path)[i],to="out.warm")
+  df.location$d.cold[i] <- distances(net,v=rownames(dist.path)[i],to="out.cold")
+}
+
+dist.path.bats <- dist.path
+dist.path.bats <- dist.path.bats[,-which(xycoords.midpoint$is.MYLU!=3)]
+df.location$path.bats <- rep(NA, length(df.location$is.MYLU))
+for(i in 1:length(df.location$path.bats)){
+  df.location$path.bats[i] <- sum(1/dist.path.bats[i,])
+}
+plot(df.location$path.bats,df.location$is.MYLU)
+plot(df.location$d.warm,df.location$is.MYLU)
+plot(df.location$d.cold,df.location$is.MYLU)
+```
+
+
+```{r working with September}
+
+# # Establish model covariates
+
+df.Sept <- df.microclim[which(df.microclim$Time >= "2017-08-22" & df.microclim$Time <= "2017-09-30 22"),]
+T.out.daily <- Temp.Daily[which(Temp.Daily$Day >= "2017-08-22" & Temp.Daily$Day <= "2017-09-30"),]
+
+# T.out.daily <- cbind(T.out.daily, Daily.mean.Barton)
+
+ggplot(df.Sept, aes(Time, Temp)) + geom_line(aes(color=Depth, group=ID)) +
+  theme_classic() 
+
+df.location$Airflow.High <- c(1,1,1,1,1,1,0,0,0,0,0,0,1,1,1,1,0,0,0,0,0,0,0,0,0,0,0,1,1,0,0,0,0,0)
+df.location$Airflow.Medium <- c(0,0,0,0,0,0,1,1,1,1,0,0,0,0,0,0,1,0,1,1,1,1,1,1,1,1,1,0,0,1,1,0,1,1)
+df.location$Airflow.Low <- c(0,0,0,0,0,0,0,0,0,0,1,1,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0)
+
+# ggplot(T.out.daily) + theme_classic() +
+  # geom_line(data=T.out.daily, aes(Day, T.AVG), color="red") +
+  # geom_line(data=T.out.daily, aes(Day, Daily.mean.Barton), color="purple")
+
+
+#Check for temporal cross correlation between outside values and loggers
+for(i in 1:nrow(df.location)){
+  logger.trace <- .colMeans(df.Sept$Temp[which(df.Sept$ID==unique(df.Sept$ID)[i])],12, length(df.Sept$Temp[which(df.Sept$ID==unique(df.Sept$ID)[i])])/12)
+  T.out.change <- diff(T.out.daily$T.AVG)
+  logger.change <- diff(logger.trace)
+
+  if(length(unique(logger.trace))>1){
+    # ccf(T.out.daily$T.AVG, logger.trace, ylab="Cross-correlation")
+    # title(IDs[i], -1)
+  }
+}
+
+for(i in 1:nrow(df.location)){
+  logger.trace <- .colMeans(df.Sept$Temp[which(df.Sept$ID==unique(df.Sept$ID)[i])],12, length(df.Sept$Temp[which(df.Sept$ID==unique(df.Sept$ID)[i])])/12)
+  T.out.change <- diff(T.out.daily$T.AVG)
+  logger.change <- diff(logger.trace)
+
+
+  if(length(unique(logger.trace))>1){
+    ccf(T.out.change, logger.change, ylab="Cross-correlation")
+    title(IDs[i], -1)
+  }
+}
+
+```
+
+
+
+```{r model for September temperature}
+
+{
+  sink ("Barton.R")
+  cat("
+      model{
+      
+      
+      #Priors
+      
+      sigma.temp ~ dgamma(0.001,0.001)
+      tau.temp <- 1/sigma.temp^2
+      
+      #Parameters to set up initial day
+      lambda.drum ~ dgamma(0.001,0.001) #rate of temp change drum entrance to MAST
+      lambda.upper ~ dgamma(0.001,0.001)#rate of temp change outside to settling point
+      beta.lower ~ dgamma(0.001,0.001) #rate of change settling point to MAST
+      
+      #Correlation factors for change in temperature with outside
+      #Two days given cross correlation demonstrated above, but could be a function
+      #Start with random values and evaluate relationships
+      
+      for(i in 1:11){
+        lambda.1.warm[i] ~ dnorm(0, 1/100)
+        lambda.2.warm[i] ~ dnorm(0, 1/100)
+        lambda.3.warm[i] ~ dnorm(0, 1/100)
+        lambda.4.warm[i] ~ dnorm(0, 1/100)
+        # lambda.5.warm[i] ~ dnorm(0, 1/100)
+        lambda.1.cold[i] ~ dnorm(0, 1/100)
+        lambda.2.cold[i] ~ dnorm(0, 1/100)
+        lambda.3.cold[i] ~ dnorm(0, 1/100)
+        lambda.4.cold[i] ~ dnorm(0, 1/100)
+        # lambda.5.cold[i] ~ dnorm(0, 1/100)
+      }
+      for(i in 1:9){
+        gamma.warm[i] ~ dnorm(0, 1/100)
+        gamma.cold[i] ~ dnorm(0, 1/100)
+      }
+        
+      for(i in 1:id.total){
+        alpha.1.warm[i] <- lambda.1.warm[1] + lambda.1.warm[2]*d.warm[i] + lambda.1.warm[3]*d.cold[i] + lambda.1.warm[4]*(elevation[i]) + lambda.1.warm[5]*d.warm[i]*d.cold[i] + lambda.1.warm[6]*d.warm[i]*elevation[i] + lambda.1.warm[7]*d.cold[i]*elevation[i] + lambda.1.warm[8]*d.warm[i]*d.cold[i]*elevation[i] + lambda.1.warm[9]*Upper[i] + lambda.1.warm[10]*Lower[i] + lambda.1.warm[11]*Drum[i]
+        alpha.2.warm[i] <- lambda.2.warm[1] + lambda.2.warm[2]*d.warm[i] + lambda.2.warm[3]*d.cold[i] + lambda.2.warm[4]*(elevation[i]) + lambda.2.warm[5]*d.warm[i]*d.cold[i] + lambda.2.warm[6]*d.warm[i]*elevation[i] + lambda.2.warm[7]*d.cold[i]*elevation[i] + lambda.2.warm[8]*d.warm[i]*d.cold[i]*elevation[i] + lambda.2.warm[9]*Upper[i] + lambda.2.warm[10]*Lower[i] + lambda.2.warm[11]*Drum[i]
+        alpha.3.warm[i] <- lambda.3.warm[1] + lambda.3.warm[2]*d.warm[i] + lambda.3.warm[3]*d.cold[i] + lambda.3.warm[4]*(elevation[i]) + lambda.3.warm[5]*d.warm[i]*d.cold[i] + lambda.3.warm[6]*d.warm[i]*elevation[i] + lambda.3.warm[7]*d.cold[i]*elevation[i] + lambda.3.warm[8]*d.warm[i]*d.cold[i]*elevation[i] + lambda.3.warm[9]*Upper[i] + lambda.3.warm[10]*Lower[i] + lambda.3.warm[11]*Drum[i]
+        alpha.4.warm[i] <- lambda.4.warm[1] + lambda.4.warm[2]*d.warm[i] + lambda.4.warm[3]*d.cold[i] + lambda.4.warm[4]*(elevation[i]) + lambda.4.warm[5]*d.warm[i]*d.cold[i] + lambda.4.warm[6]*d.warm[i]*elevation[i] + lambda.4.warm[7]*d.cold[i]*elevation[i] + lambda.4.warm[8]*d.warm[i]*d.cold[i]*elevation[i] + lambda.4.warm[9]*Upper[i] + lambda.4.warm[10]*Lower[i] + lambda.4.warm[11]*Drum[i]
+        
+        alpha.1.cold[i] <- lambda.1.cold[1] + lambda.1.cold[2]*d.warm[i] + lambda.1.cold[3]*d.cold[i] + lambda.1.cold[4]*(elevation[i]) + lambda.1.cold[5]*d.warm[i]*d.cold[i] + lambda.1.cold[6]*d.warm[i]*elevation[i] + lambda.1.cold[7]*d.cold[i]*elevation[i] + lambda.1.cold[8]*d.warm[i]*d.cold[i]*elevation[i] + lambda.1.cold[9]*Upper[i] + lambda.1.cold[10]*Lower[i] + lambda.1.cold[11]*Drum[i]
+        alpha.2.cold[i] <- lambda.2.cold[1] + lambda.2.cold[2]*d.warm[i] + lambda.2.cold[3]*d.cold[i] + lambda.2.cold[4]*(elevation[i]) + lambda.2.cold[5]*d.warm[i]*d.cold[i] + lambda.2.cold[6]*d.warm[i]*elevation[i] + lambda.2.cold[7]*d.cold[i]*elevation[i] + lambda.2.cold[8]*d.warm[i]*d.cold[i]*elevation[i] + lambda.2.cold[9]*Upper[i] + lambda.2.cold[10]*Lower[i] + lambda.2.cold[11]*Drum[i]
+        alpha.3.cold[i] <- lambda.3.cold[1] + lambda.3.cold[2]*d.warm[i] + lambda.3.cold[3]*d.cold[i] + lambda.3.cold[4]*(elevation[i]) + lambda.3.cold[5]*d.warm[i]*d.cold[i] + lambda.3.cold[6]*d.warm[i]*elevation[i] + lambda.3.cold[7]*d.cold[i]*elevation[i] + lambda.3.cold[8]*d.warm[i]*d.cold[i]*elevation[i] + lambda.3.cold[9]*Upper[i] + lambda.3.cold[10]*Lower[i] + lambda.3.cold[11]*Drum[i]
+        alpha.4.cold[i] <- lambda.4.cold[1] + lambda.4.cold[2]*d.warm[i] + lambda.4.cold[3]*d.cold[i] + lambda.4.cold[4]*(elevation[i]) + lambda.4.cold[5]*d.warm[i]*d.cold[i] + lambda.4.cold[6]*d.warm[i]*elevation[i] + lambda.4.cold[7]*d.cold[i]*elevation[i] + lambda.4.cold[8]*d.warm[i]*d.cold[i]*elevation[i] + lambda.4.cold[9]*Upper[i] + lambda.4.cold[10]*Lower[i] + lambda.4.cold[11]*Drum[i]
+        # alpha.5.cold[i] <- lambda.5.cold[1] + lambda.5.cold[2]*d.warm[i] + lambda.5.cold[3]*d.cold[i] + lambda.5.cold[4]*(elevation[i]) + lambda.5.cold[5]*d.warm[i]*d.cold[i] + lambda.5.cold[6]*d.warm[i]*elevation[i] + lambda.5.cold[7]*d.cold[i]*elevation[i] + lambda.5.cold[8]*d.warm[i]*d.cold[i]*elevation[i] + lambda.5.cold[9]*Upper[i] + lambda.5.cold[10]*Lower[i] + lambda.5.cold[11]*Drum[i]
+      }
+      
+      
+      #Estimate the deepest temperature using a mean annual surface temperature analogue
+    
+      for(d in start.MAST:end.MAST){
+        MAST[d-start.MAST+1] <- mean(T.history[(d-Window.size+1):d])
+      }
+      MAST.adjust ~ dunif(3,5)
+      for(d in 1:days){
+        MAST.analog[d] <- MAST[d] - MAST.adjust #define local MAST equivalent
+        mu.temp.out[d] <- Outside.mean.daily[d+3] #define outdoor conditions
+        mu.temp.out.lag[d] <- mean(Outside.mean.daily[d:d+3])
+      }
+      
+      #A couple prior days to get lag rolling
+      mu.temp.out.neg1 <- Outside.mean.daily[3]
+      mu.temp.out.neg2 <- Outside.mean.daily[2]
+      
+      temp.midpoint[1] ~ dunif(MAST.analog[1], mu.temp.out[1]) #Temperature at midway settling point
+      
+      # Percentage of airflow rather than MAST influence
+      for(i in 1:3){
+        nu.warm[i] ~ dbeta(1,1)
+        nu.cold[i] ~ dbeta(1,1)
+      }
+      lambda.wall.warm ~ dgamma(0.001,0.001)
+      lambda.wall.cold ~ dgamma(0.001,0.001)
+      
+      #First day, establish current temperatures based on MAST analog and warm outside
+      
+      for(d in 1:1){
+        for(i in 1:id.total){
+          mu.temp[d,i] <- (Upper[i]*(1-Drum[i])*(1-Lower[i])) * ((mu.temp.out.lag[d]-temp.midpoint[d])*exp(-lambda.upper*(elev.upper.entry-elevation.scaled[i]))+temp.midpoint[d]) + (Drum[i]*(1-Upper[i])*(1-Lower[i])) * ((temp.midpoint[d]-MAST.analog[d])*exp(-lambda.drum*(elev.drum.entry-elevation.scaled[i]))+MAST.analog[d]) + (Lower[i]*(1-Drum[i])*(1-Upper[i])) * (temp.midpoint[d]+beta.lower*(elevation.scaled[i]-elev.lower.entry))
+          temp.hat[d,i] ~ dnorm(mu.temp[d,i], tau.temp)
+        }
+      }
+      
+    
+    ######First day established, let's model subsequent days
+    
+    for(i in 1:id.total){
+    
+      mu.temp[2,i] <- (nu.warm[1]*Airflow.High[i]+nu.warm[2]*Airflow.Medium[i]+nu.warm[3]*Airflow.Low[i])*(mu.temp[1,i] + alpha.1.warm[i]*(mu.temp.out[2]-mu.temp.out[1]) + alpha.2.warm[i]*(mu.temp.out[1]-mu.temp.out.neg1) + alpha.3.warm[i]*(mu.temp.out.neg1-mu.temp.out.neg2) + alpha.4.warm[i]*(MAST.analog[2]-MAST.analog[1]) + gamma.warm[1]*d.warm[i] + gamma.warm[2]*d.cold[i] + gamma.warm[3]*elevation[i] + gamma.warm[4]*mu.temp.out[2] + gamma.warm[5]*mu.temp.out[1] + gamma.warm[6]*mu.temp.out.neg1 + gamma.warm[7]*mu.temp.out.neg2 + gamma.warm[8]*MAST.analog[1] + gamma.warm[9]*MAST.analog[2]) + (1-(nu.warm[1]*Airflow.High[i]+nu.warm[2]*Airflow.Medium[i]+nu.warm[3]*Airflow.Low[i]))*((mu.temp[1,i]-MAST.analog[2])*exp(-lambda.wall.warm)+MAST.analog[2])
+      temp.hat[2,i] ~ dnorm(mu.temp[2,i], tau.temp)
+      
+      mu.temp[3,i] <- (nu.warm[1]*Airflow.High[i]+nu.warm[2]*Airflow.Medium[i]+nu.warm[3]*Airflow.Low[i])*(mu.temp[2,i] + alpha.1.warm[i]*(mu.temp.out[3]-mu.temp.out[2]) + alpha.2.warm[i]*(mu.temp.out[2]-mu.temp.out[1]) + alpha.3.warm[i]*(mu.temp.out[1]-mu.temp.out.neg1) + alpha.4.warm[i]*(MAST.analog[3]-MAST.analog[2]) + gamma.warm[1]*d.warm[i] + gamma.warm[2]*d.cold[i] + gamma.warm[3]*elevation[i] + gamma.warm[4]*mu.temp.out[3] + gamma.warm[5]*mu.temp.out[2] + gamma.warm[6]*mu.temp.out[1] + gamma.warm[7]*mu.temp.out.neg1 + gamma.warm[8]*MAST.analog[2] + gamma.warm[9]*MAST.analog[3]) + (1-(nu.warm[1]*Airflow.High[i]+nu.warm[2]*Airflow.Medium[i]+nu.warm[3]*Airflow.Low[i]))*((mu.temp[2,i]-MAST.analog[3])*exp(-lambda.wall.warm)+MAST.analog[3])
+      temp.hat[3,i] ~ dnorm(mu.temp[3,i], tau.temp)
+      
+    }
+    
+    for(d in 4:days){
+      for(i in 1:id.total){
+      
+        mu.temp[d,i] <- ifelse(mu.temp.out[d]>=MAST.analog[d], (nu.warm[1]*Airflow.High[i]+nu.warm[2]*Airflow.Medium[i]+nu.warm[3]*Airflow.Low[i])*(mu.temp[(d-1),i] + alpha.1.warm[i]*(mu.temp.out[d]-mu.temp.out[(d-1)]) + alpha.2.warm[i]*(mu.temp.out[(d-1)]-mu.temp.out[(d-2)]) + alpha.3.warm[i]*(mu.temp.out[(d-2)]-mu.temp.out[(d-3)]) + alpha.4.warm[i]*(MAST.analog[d]-MAST.analog[d-1]) + gamma.warm[1]*d.warm[i] + gamma.warm[2]*d.cold[i] + gamma.warm[3]*elevation[i] + gamma.warm[4]*mu.temp.out[d] + gamma.warm[5]*mu.temp.out[d-1] + gamma.warm[6]*mu.temp.out[d-2] + gamma.warm[7]*mu.temp.out[d-3] + gamma.warm[8]*MAST.analog[d-1] + gamma.warm[9]*MAST.analog[d]) + (1-(nu.warm[1]*Airflow.High[i]+nu.warm[2]*Airflow.Medium[i]+nu.warm[3]*Airflow.Low[i]))*((mu.temp[d-1,i]-MAST.analog[d])*exp(-lambda.wall.warm)+MAST.analog[d]), (nu.cold[1]*Airflow.High[i]+nu.cold[2]*Airflow.Medium[i]+nu.cold[3]*Airflow.Low[i])*(mu.temp[(d-1),i] + alpha.1.cold[i]*(mu.temp.out[d]-mu.temp.out[(d-1)]) + alpha.2.cold[i]*(mu.temp.out[(d-1)]-mu.temp.out[(d-2)]) + alpha.3.cold[i]*(mu.temp.out[(d-2)]-mu.temp.out[(d-3)]) + alpha.4.cold[i]*(MAST.analog[d]-MAST.analog[d-1]) + gamma.cold[1]*d.warm[i] + gamma.cold[2]*d.cold[i] + gamma.cold[3]*elevation[i] + gamma.cold[4]*mu.temp.out[d] + gamma.cold[5]*mu.temp.out[d-1] + gamma.cold[6]*mu.temp.out[d-2] + gamma.cold[7]*mu.temp.out[d-3] + gamma.cold[8]*MAST.analog[d-1] + gamma.cold[9]*MAST.analog[d]) + (1-(nu.cold[1]*Airflow.High[i]+nu.cold[2]*Airflow.Medium[i]+nu.cold[3]*Airflow.Low[i]))*((mu.temp[d-1,i]-MAST.analog[d])*exp(-lambda.wall.cold)+MAST.analog[d]))
+        
+        temp.hat[d,i] ~ dnorm(mu.temp[d,i], tau.temp)
+        
+      }
+    }
+    
+    #####################Likelihood for data################
+    for(d in 1:days){
+      for(j in 1:12){
+        for(i in 1:id.total){
+            temp[(d-1)%*%12%*%id.total+(j-1)%*%id.total+i] ~ dnorm(mu.temp[d,i], tau.temp)
+        }
+      }
+    }
+    
+    
+    #Fitting to important parameters in logistic model
+    sigma.T.Sept.sd ~ dgamma(100/100,10/100)
+    sigma.T.mean ~ dgamma(100/100,10/100)
+    tau.T.mean <- 1/sigma.T.mean^2
+    for(i in 1:id.total){
+      T.Sept.sd.pred[i] <- ifelse(sd(mu.temp[Sept.date.index,i])==0, 0.000001, sd(mu.temp[Sept.date.index,i]))
+      T.Sept.sd[i] ~ dgamma(T.Sept.sd.pred[i]^2/sigma.T.Sept.sd^2, T.Sept.sd.pred[i]/sigma.T.Sept.sd^2)
+      
+      T.mean.pred[i] <- mean(mu.temp[,i])
+      T.mean[i] ~ dnorm(T.mean.pred[i],tau.T.mean)
+    }
+    
+    
+    #########################################
+    #LOGISTIC REGRESSION PORTION
+    #Covariates are centered and scaled here
+    #########################################
+    
+      ######Priors
+      for(j in 1:n.logistic){
+      B[j] ~ dnorm(0,1/1000)
+      }
+
+
+      ######Posteriors
+      for(i in 1:id.total){
+
+        phi[i] <- max(1/(1.0000001+exp(-(B[1] + B[2]*((d.warm[i]-mean(d.warm))/sd(d.warm)) + B[3]*((T.mean.pred[i]-mean(T.mean.pred))/sd(T.mean.pred)) + B[4]*((T.Sept.sd.pred[i]-mean(T.Sept.sd.pred))/sd(T.Sept.sd.pred)) + B[5]*((path.bats[i]-mean(path.bats))/sd(path.bats))))), 0.0000001)
+
+
+
+        y[i] ~ dbern(phi[i])
+      }
+      
+      }
+      ", fill=TRUE)
+  sink()
+}
+
+```
+
+
+```{r running Sept temp model}
+
+# # Model inputs
+
+set.seed(7)
+start.Date <- which(Temp.Daily$Day==Temp.Daily$Day[which(Temp.Daily$Day=="2017-08-15") + which(Temp.Daily$T.AVG[Temp.Daily$Day >= "2017-08-16" & Temp.Daily$Day <= "2017-08-31"]==max(Temp.Daily$T.AVG[Temp.Daily$Day >= "2017-08-16" & Temp.Daily$Day <= "2017-08-31"]))])
+end.Date <- which(Temp.Daily$Day=="2018-04-30")
+# end.Date <- which(Temp.Daily$Day=="2017-09-30")
+
+df.input <- df.microclim[which(df.microclim$Time >= "2017-08-22" & df.microclim$Time <= "2018-04-30 22"),]
+# df.input <- df.Sept
+
+
+#Calculate daily outside standard deviation in temperature
+T.sd.daily <- rep(NA,length(unique(df.input$day.ind)))
+for(i in 1:length(T.sd.daily)){
+  T.sd.daily[i] <- sd(dwt$AVG[(which(dwt$DATE=="2017-08-22 00")+12*(i-7)):(which(dwt$DATE=="2017-08-22 00")+12*(i-1)+11)])
+}
+# plot(unique(df.input$day.ind),T.sd.daily)
+
+#Calculate T.mean and T.Sept.sd for each site to help estimations
+T.Sept.sd <- rep(NA, length(IDs))
+T.Sept.sd.mean <- rep(NA, length(IDs))
+T.mean <- rep(NA, length(IDs))
+for(i in 1:length(IDs)){
+  T.Sept.sd[i] <- sd(df.Sept$Temp[which(T.out.daily$Day>="2017-09-01 00" & T.out.daily$Day<="2017-09-30 22" & df.Sept$ID==unique(df.Sept$ID)[i])])
+  # T.Sept.sd.mean[i] <- sd(.colMeans(df.Sept$Temp[which(T.out.daily$Day>="2017-09-01 00" & T.out.daily$Day<="2017-09-30 22" & df.Sept$ID==unique(df.Sept$ID)[i])],12, length(df.Sept$Temp[which(T.out.daily$Day>="2017-09-01 00" & T.out.daily$Day<="2017-09-30 22" & df.Sept$ID==unique(df.Sept$ID)[i])])/12))
+  if(T.Sept.sd[i]==0) T.Sept.sd[i] <- 0.0000001
+  T.mean[i] <- mean(df.input$Temp[which(df.input$ID==unique(df.input$ID)[i])])
+}
+# plot(T.Sept.sd,T.Sept.sd.mean)
+# abline(0,1)
+
+datalist <- list(
+  start.MAST = start.Date, #Day to start MAST
+  end.MAST = end.Date, #Day to end MAST
+  T.history =Temp.Daily$T.AVG, #Historical temps to calculate MAST analogue
+  id.total = length(unique(df.input$ID)), #Number of data loggers
+  days = length(unique(df.input$day.ind)), #Number of days to evaluate
+  # outer.temp.est = dwt$AVG, #Outer temps estimate by averaging weather stations
+  temp = df.input$Temp, #2017-18 data logger temps
+  Drum = df.input$Drum[1:length(unique(df.input$ID))], #1/0 for drum room
+  Upper = df.input$Upper[1:length(unique(df.input$ID))], #1/0 for upper room
+  Lower = df.input$Lower[1:length(unique(df.input$ID))], #1/0 for lower room
+  elev.drum.entry = (df.location$Elevation[which(df.location$iButton==38)]-1100)/1600, #Elev. of drum entrance
+  elev.midpoint = ((max(df.location$Elevation[which(df.location$Room=="Lower")]) + min(df.location$Elevation[which(df.location$Room=="Upper")]))/2-1100)/1600, #elevation of temp settling midpoint
+  elevation = df.location$Elevation, #Data logger elevation
+  Window.size = 365,  #Period of time to average to determine MAST
+  elevation.scaled = (df.location$Elevation-1100)/1600,
+  elev.upper.entry = (1580-1100)/1600,
+  elev.lower.entry = (max(df.location$Elevation[which(df.location$Room=="Lower")])-1100)/1600,
+  T.Sept.sd = T.Sept.sd,
+  d.warm = df.location$d.warm,
+  d.cold = df.location$d.cold,
+  Sept.date.index = which(T.out.daily$Day>="2017-09-01" & T.out.daily$Day<="2017-09-30"),
+  T.mean = T.mean,
+  T.sd.daily = T.sd.daily,
+  path.bats = df.location$path.bats,
+  n.logistic = 5,
+  y = df.location$is.MYLU,
+  Outside.mean.daily = Outside.mean.daily$Temp,
+  i.drument = which(df.location$iButton==38),
+  Airflow.High = df.location$Airflow.High,
+  Airflow.Medium = df.location$Airflow.Medium,
+  Airflow.Low = df.location$Airflow.Low
+)
+
+inits = list(
+  list(
+    sigma.temp = 1,
+    MAST.adjust = 4
+  ),
+  list(
+    sigma.temp = 0.5,
+    MAST.adjust = 3
+  )
+)
+
+n.update=2000
+n.iter=1000
+
+
+###Clean up some space for memory
+rm(df.microclim,
+   df.pred.trim,
+   df.RH.test,
+   # df.trim,
+   dwh,
+   dwh.18,
+   dwt,
+   dwt.18,
+   dww,
+   dww.18,
+   test,
+   xycoords,
+   xycoords.midpoint)
+gc()
+```
+
+```{r model run}
+
+# # Run model
+
+jm = jags.model("Barton.R", data=datalist, n.adapt = 1000, inits=inits, n.chains=length(inits))
+update(jm, n.iter = n.update)
+setwd("C:/Users/bengo/Documents/WNS/2017Barton/Output")
+
+zj = jags.samples(jm,variable.names=c("temp.hat","mu.temp","sigma.temp","MAST.adjust","lambda.upper","beta.lower","lambda.drum","temp.midpoint","lambda.1.warm","lambda.2.warm","lambda.3.warm","lambda.4.warm","lambda.1.cold","lambda.2.cold","lambda.3.cold","lambda.4.cold","T.Sept.sd.pred","T.mean.pred","B","phi","gamma.warm","gamma.cold","nu.warm","nu.cold","lambda.wall.warm","lambda.wall.cold","alpha.4.warm","alpha.4.cold"), n.iter=n.iter, n.thin=1)
+save(zj, file="Predict.jags.211104.rda")
+
+zm = coda.samples(jm, variable.names=c("sigma.temp","MAST.adjust","lambda.upper","beta.lower","lambda.drum","temp.midpoint","lambda.1.warm","lambda.2.warm","lambda.3.warm","lambda.4.warm","lambda.1.cold","lambda.2.cold","lambda.3.cold","lambda.4.cold","lambda.wall.warm","lambda.wall.cold","T.Sept.sd.pred","T.mean.pred","B","phi","gamma.warm","gamma.cold","nu.warm","nu.cold","lambda.wall.warm","lambda.wall.cold","alpha.4.warm","alpha.4.cold"), n.iter=n.iter, n.thin=1)
+plot(zm)
+save(zm, file="Predict.coda.211104.rda")
+
+
+
+# dic.poly <- dic.samples(jm, n.iter=1000, thin=1, type="pD")
+# dic.poly
+# save(dic.poly, file="DICOutput.new.rda")
+```
+
+```{r visualize Barton.R output}
+
+load("Output/FullHierarchicalWorking.jags.rda")
+
+df.results <- cbind(summary(zj$mu.temp,mean)$stat[1,],
+                    t(summary(zj$mu.temp,quantile,c(0.025,0.975))$stat[,1,]),
+                    summary(zj$temp.hat,mean, na.rm=TRUE)$stat[1,],
+                    t(summary(zj$temp.hat,quantile,c(0.025,0.975), na.rm=TRUE)$stat[,1,]),
+                    df.location$Elevation,
+                    df.location$d.warm,
+                    df.location$d.cold,
+                    # summary(zj$alpha.1,mean)$stat,
+                    # summary(zj$alpha.2,mean)$stat,
+                    df.location$iButton)
+colnames(df.results) <- c("mu.temp","mu.temp.low","mu.temp.high",                        "temp.hat","temp.hat.low","temp.hat.high","elevation","d.warm","d.cold","ID")
+df.results <- as.data.frame(df.results)
+
+ggplot(df.results) + theme_classic() + 
+  xlab("Elevation") + ylab("Temperature") + 
+  geom_point(aes(elevation,temp.hat), color="red") +
+  geom_errorbar(aes(elevation,ymin=temp.hat.low, ymax=temp.hat.high), color="red") +
+  geom_point(data=df.Sept[1:(length(unique(df.trim$ID))*12),],aes(Elevation,Temp), color="gray") +
+  geom_point(aes(elevation,mu.temp), color="black") +
+  geom_errorbar(aes(elevation, ymin=mu.temp.low, ymax=mu.temp.high), color="black")
+
+```
+
+```{r sequence visualization}
+
+T.results <- as.data.frame(matrix(ncol=4, nrow=length(IDs)))
+colnames(T.results) <- c("Sept.sd.Data", "Sept.sd.Prediction","mean.Data", "mean.Prediction")
+
+for(i in 1:length(IDs)){
+  
+mean.temp <- rep(NA,length(unique(df.input$day.ind)))
+for(d in unique(df.input$day.ind)[1]:unique(df.input$day.ind)[length(unique(df.input$day.ind))]){
+  mean.temp[d-unique(df.input$day.ind)[1]+1] <- mean(df.input$Temp[which(df.input$day.ind==d & df.input$ID==unique(df.input$ID)[i])])
+}
+
+df.seq <- cbind(summary(zj$mu.temp,mean)$stat[,i],
+                t(summary(zj$mu.temp,quantile,c(0.025,0.975))$stat[,,i]),
+                summary(zj$temp.hat,mean, na.rm=TRUE)$stat[,i],
+                t(summary(zj$temp.hat,quantile,c(0.025,0.975), na.rm=TRUE)$stat[,,i]),
+                mean.temp)
+colnames(df.seq) <- c("mu.mean","mu.low","mu.high","temp.hat.mean","temp.hat.low","temp.hat.high","data")
+Date <- as.Date(Temp.Daily[start.Date:end.Date,1])
+                
+df.seq <- as.data.frame(df.seq)
+df.seq$Date <- Date
+
+p <- ggplot(df.seq) + theme_classic() + ylab("Temp") + xlab("Date") + 
+  ggtitle(IDs[i]) +
+  geom_point(aes(Date,data)) + 
+  geom_line(aes(Date,mu.mean),color="red") + 
+  geom_ribbon(aes(Date,ymin=mu.low,ymax=mu.high),color="red",alpha=0.3) + 
+  geom_line(aes(Date,temp.hat.mean),color="black") + 
+  geom_ribbon(aes(Date,ymin=temp.hat.low,ymax=temp.hat.high),color="black",alpha=0.3)
+print(p)
+
+T.results[i,1] <- sd(df.seq$data[which(T.out.daily$Day>="2017-09-01" & T.out.daily$Day<="2017-09-30")])
+# T.results[i,2] <- sd(df.seq$mu.mean[which(T.out.daily$Day>="2017-09-01" & T.out.daily$Day<="2017-09-30")])
+T.results[i,3] <- mean(df.seq$data)
+# T.results[i,4] <- mean(df.seq$mu.mean)
+
+}
+
+T.results$Sept.sd.Prediction <- summary(zj$T.Sept.sd.pred, mean)$stat
+T.results$mean.Prediction <- summary(zj$T.mean.pred, mean)$stat
+
+write.csv(T.results,"T.results.csv")
+
+ggplot(T.results, aes(Sept.sd.Data, Sept.sd.Prediction)) + theme_classic() +
+  ggtitle("Standard deviation in September temperature") +
+  geom_point() +
+  geom_smooth(method='lm') +
+  geom_abline(slope=1, intercept=0)
+
+ggplot(T.results, aes(mean.Data, mean.Prediction)) + theme_classic() +
+  ggtitle("Mean hibernation temperature") +
+  geom_point() +
+  geom_smooth(method='lm') +
+  geom_abline(slope=1, intercept=0)
+
+x <- lm(T.results$mean.Prediction ~ T.results$mean.Data)
+summary(x)
+x <- lm(T.results$Sept.sd.Prediction ~ T.results$Sept.sd.Data)
+summary(x)
+
+```
+
+```{r logistic results}
+df.results <- df.location
+df.results$phi.mean <- summary(zj$phi, mean)$stat
+df.results$phi.low <- summary(zj$phi, quantile, 0.025)$stat
+df.results$phi.high <- summary(zj$phi, quantile, 0.975)$stat
+
+ggplot(df.results) + theme_classic() +
+  geom_point(aes(path.bats,is.MYLU)) +
+  geom_point(aes(path.bats,phi.mean),color="sky blue") +
+  geom_errorbar(aes(x=path.bats,ymin=phi.low,ymax=phi.high), color="sky blue") 
+  # geom_label(aes(x=path.bats, y=phi.mean, label=iButton))
+
+
+summary(zj$B, quantile, c(0.025, 0.975))
+
+```
+
+
+```{r temporal relationships}
+
+df.alpha <- as.data.frame(df.location)
+
+df.alpha$alpha.1.warm <- summary(zj$lambda.1.warm, mean)$stat[1] + summary(zj$lambda.1.warm, mean)$stat[2]*df.alpha$d.warm + summary(zj$lambda.1.warm, mean)$stat[3]*df.alpha$d.cold + summary(zj$lambda.1.warm, mean)$stat[4]*(1/df.alpha$Elevation)
+
+df.alpha$alpha.2.warm <- summary(zj$lambda.2.warm, mean)$stat[1] + summary(zj$lambda.2.warm, mean)$stat[2]*df.alpha$d.warm + summary(zj$lambda.2.warm, mean)$stat[3]*df.alpha$d.cold + summary(zj$lambda.2.warm, mean)$stat[4]*(1/df.alpha$Elevation)
+
+df.alpha$alpha.3.warm <- summary(zj$lambda.3.warm, mean)$stat[1] + summary(zj$lambda.3.warm, mean)$stat[2]*df.alpha$d.warm + summary(zj$lambda.3.warm, mean)$stat[3]*df.alpha$d.cold + summary(zj$lambda.3.warm, mean)$stat[4]*(1/df.alpha$Elevation)
+
+df.alpha$alpha.1.cold <- summary(zj$lambda.1.cold, mean)$stat[1] + summary(zj$lambda.1.cold, mean)$stat[2]*df.alpha$d.warm + summary(zj$lambda.1.cold, mean)$stat[3]*df.alpha$d.cold + summary(zj$lambda.1.cold, mean)$stat[4]*(1/df.alpha$Elevation)
+
+df.alpha$alpha.2.cold <- summary(zj$lambda.2.cold, mean)$stat[1] + summary(zj$lambda.2.cold, mean)$stat[2]*df.alpha$d.warm + summary(zj$lambda.2.cold, mean)$stat[3]*df.alpha$d.cold + summary(zj$lambda.2.cold, mean)$stat[4]*(1/df.alpha$Elevation)
+
+df.alpha$alpha.3.cold <- summary(zj$lambda.3.cold, mean)$stat[1] + summary(zj$lambda.3.cold, mean)$stat[2]*df.alpha$d.warm + summary(zj$lambda.3.cold, mean)$stat[3]*df.alpha$d.cold + summary(zj$lambda.3.cold, mean)$stat[4]*(1/df.alpha$Elevation)
+
+
+ggplot(df.alpha) + theme_classic() +
+  geom_point(aes(d.warm, alpha.1.warm)) +
+  geom_point(aes(d.warm, alpha.2.warm), color="red")  +
+  geom_point(aes(d.warm, alpha.3.warm), color="blue") 
+
+ggplot(df.alpha) + theme_classic() +
+  geom_point(aes(d.warm, alpha.1.cold)) +
+  geom_point(aes(d.warm, alpha.2.cold), color="red")  +
+  geom_point(aes(d.warm, alpha.3.cold), color="blue") 
+
+ggplot(df.alpha) + theme_classic() +
+  geom_point(aes(d.cold, alpha.1.warm)) +
+  geom_point(aes(d.cold, alpha.2.warm), color="red")  +
+  geom_point(aes(d.cold, alpha.3.warm), color="blue") 
+
+ggplot(df.alpha) + theme_classic() +
+  geom_point(aes(d.cold, alpha.1.cold)) +
+  geom_point(aes(d.cold, alpha.2.cold), color="red")  +
+  geom_point(aes(d.cold, alpha.3.cold), color="blue") 
+
+ggplot(df.alpha) + theme_classic() +
+  geom_point(aes(Elevation, alpha.1.warm)) +
+  geom_point(aes(Elevation, alpha.2.warm), color="red")  +
+  geom_point(aes(Elevation, alpha.3.warm), color="blue") 
+
+ggplot(df.alpha) + theme_classic() +
+  geom_point(aes(Elevation, alpha.1.cold)) +
+  geom_point(aes(Elevation, alpha.2.cold), color="red")  +
+  geom_point(aes(Elevation, alpha.3.cold), color="blue") 
+
+ggplot(df.alpha) + theme_classic() +
+  geom_point(aes(Elevation, alpha.1.warm+alpha.2.warm+alpha.3.warm)) +
+  geom_label(aes(Elevation, alpha.1.warm+alpha.2.warm+alpha.3.warm+0.1, label=iButton))
+
+ggplot(df.alpha) + theme_classic() +
+  geom_point(aes(Elevation, alpha.1.cold+alpha.2.cold+alpha.3.cold)) +
+  geom_label(aes(Elevation, alpha.1.warm+alpha.2.warm+alpha.3.warm+0.1, label=iButton))
+
+
+
+```
+
+

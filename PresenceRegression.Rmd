@@ -1,0 +1,1003 @@
+---
+title: "Logistic regression of bat presence"
+output: html_document
+---
+
+```{r setup, include=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+rm(list=ls())
+```
+
+"Predicting hibernating bat niche range in spatiotemporally complex hibernacula"
+
+Author: Ben Golas
+Coauthors: Colleen Webb, Carl Herzog, Casey Pendergast, Angette Pastuszek, Paul Cryan
+
+This file was created to test regression of bat presence/absence to indicate driving factors of roost establishment within hibernacula. We begin by cleaning the data to systematically eliminate erroneous measurements. To do this, we remove temperature measurements greater than 20C and less than -6C, and assume that relative humidity is 100\% in the warmer months (before September 1st and after May 14th).
+
+```{r data logger import, echo=FALSE, warning=FALSE, message=FALSE}
+##########
+#This script is for importation of iButton data into a usable format.
+##########
+
+#Setting up logger info as in initial report
+library(tidyverse)
+library(lubridate)
+library(reshape2)
+library(ggplot2)
+library(schoolmath)
+library(plyr)
+library(gridExtra)
+library(rjags)
+library(cowplot)
+
+
+#Set the working directory for the folder of interest on your computer
+setwd("C:/Users/bengo/Documents/WNS/2017Barton/Barton2017")
+getwd()
+#Identify your iButton files in RHreads
+#Not including faulty loggers 28,33,80
+
+RHreads <- c("003_RH.csv","004_RH.csv","005_RH.csv","006_RH.csv","007_RH.csv",
+             "013_RH.csv","020_RH.csv","022_RH.csv","023_RH.csv","026_RH.csv","027_RH.csv",
+             "031_RH.csv","038_RH.csv","040_RH.csv","045_RH.csv",
+             "046_RH.csv","050_RH.csv","058_RH.csv","064_RH.csv","065_RH.csv","067_RH.csv",
+             "068_RH.csv","072_RH.csv","074_RH.csv","075_RH.csv","078_RH.csv",
+             "088_RH.csv","094_RH.csv","096_RH.csv","101_RH.csv","103_RH.csv","110_RH.csv",
+             "116_RH.csv","117_RH.csv")
+
+Treads <- c("003_T.csv","004_T.csv","005_T.csv","006_T.csv","007_T.csv",
+            "013_T.csv","020_T.csv","022_T.csv","023_T.csv","026_T.csv","027_T.csv",
+            "031_T.csv","038_T.csv","040_T.csv","045_T.csv",
+            "046_T.csv","050_RH.csv","058_T.csv","064_T.csv","065_T.csv","067_T.csv",
+            "068_T.csv","072_T.csv","074_T.csv","075_T.csv","078_T.csv",
+            "088_T.csv","094_T.csv","096_T.csv","101_T.csv","103_T.csv","110_T.csv",
+            "116_T.csv","117_T.csv")
+
+
+
+IDs <- as.numeric(gsub("_RH.csv","",RHreads))
+
+setwd("C:/Users/bengo/Documents/WNS/2017Barton")
+
+#Load data that is cleaned in DataCleaning file
+setwd("C:/Users/bengo/Documents/WNS/2017Barton/DataCleaning")
+load("df.trim") #Data for 2017-18 data loggers
+load("dwt") #Data files for 2017-18 averaged outside data
+load("dwh")
+load("dww")
+load("df.pred.trim") #Data for 2018-19 data loggers
+load("dwt.18") #Data for 2018-19 averaged outside data
+load("dwh.18")
+load("dww.18")
+load("Temp14_19")
+
+# Make sure all time points are present and equally spaced
+test <- as.data.frame(cbind(unique(df.trim$Time),1:length(unique(df.trim$Time))))
+# ggplot(test,aes(as_datetime(V1, format="%Y-%m-%d %H"),as.numeric(as.character(V2)),group=1)) + geom_line()
+ID.drum <- c("022","023","026","027","028","031","033")
+df.drum <- df.trim[which(match(df.trim$ID,ID.drum)!="NA"),]
+# ggplot(df.drum,aes(Time,Temp))+geom_line(aes(group=iButton, color=Depth)) + 
+  # theme_minimal() + scale_color_viridis_c()
+
+
+
+RHreads <- c("020_RH.csv", "028_RH.csv", "040_RH.csv")
+
+Treads <- c("020_T.csv", "028_T.csv", "040_T.csv")
+
+IDs.18 <- as.numeric(gsub("_RH.csv","",RHreads))
+
+#Below will plot line graphs for each iButton separately.
+# ggplot(df.pred.trim,aes(Time,Temp))+geom_line(aes(group=iButton,color=ID)) + theme_minimal()
+# ggplot(df.trim,aes(Time,Temp))+geom_line(aes(group=iButton,color=Depth)) +
+#   theme_minimal() + ylim(-10,25)
+# ggplot(df.trim,aes(Time,RH))+geom_line(aes(group=iButton,color=Depth)) + theme_minimal()
+
+df.RH.test <- df.trim[df.trim$Time>="2017-12-01 00" & df.trim$Time<="2018-04-15 22",]
+# ggplot(df.RH.test, aes(Time,RH)) + geom_line(aes(group=iButton,color=Depth)) +
+                          # theme_minimal() + ylim(40,120)
+
+
+# ggplot(df.RH.test,aes(Time,(RH/100)*0.611*exp(17.503*Temp/(Temp+240.97))))+geom_line(aes(group=iButton,color=Depth)) + theme_minimal() + ylim(-0.5,1.4)
+# #Make sure all time points are present and equally spaced
+# test <- as.data.frame(cbind(unique(df.pred.trim$Time),1:length(unique(df.pred.trim$Time))))
+# ggplot(test,aes(as_datetime(V1),as.numeric(as.character(V2)),group=1)) + geom_line()  
+
+
+setwd("C:/Users/bengo/Documents/WNS/2017Barton")
+df.location <- read.csv("LocationInfo.csv")
+df.location <- df.location[match(IDs,df.location$iButton),]
+df.location <- subset(separate(df.location,"Approx..Elevation.Above.Lake.Champlain",into=c("a1","a2"),sep="/"))
+df.location$a1 <- as.numeric(df.location$a1)
+df.location$a2 <- as.numeric(df.location$a2)
+df.location$Elevation <- rowMeans(df.location[,4:5],na.rm=TRUE)
+
+df.location$is.MYLU <- ifelse(grepl("MYLU",df.location$Bats),1,0)
+df.location$is.MYSO <- ifelse(grepl("MYSO",df.location$Bats),1,0)
+df.location$is.MYLE <- ifelse(grepl("MYLE",df.location$Bats),1,0)
+
+xycoords <- cbind(IDs,subset(df.location, select=c(x_coord,y_coord,Elevation)))
+
+df.location <- subset(df.location, select = -c(x_coord,y_coord,a1,a2,Bats,Region))
+
+df.trim <- df.trim[which(as.numeric(as.character(df.trim$ID)) %in% IDs),]
+
+# #Remove problematic loggers
+# 
+# rejects <- c("28","33","80")
+# df.location <- df.location[-which(as.numeric(df.location$iButton %in% rejects)==1),]
+
+
+#Clean data to remove unusable values
+#Reset values associated with temperature errors
+for(i in 1:5){
+df.trim$RH[which(df.trim$Temp>=20)] <- df.trim$RH[(which(df.trim$Temp>=20)-length(unique(df.trim$ID)))] 
+df.trim$RH[which(df.trim$Temp<=-6)] <- df.trim$RH[(which(df.trim$Temp<=-6)-length(unique(df.trim$ID)))]
+}
+#Reset erroneous values
+df.trim$RH <- df.trim$RH/100
+df.trim$RH[which(df.trim$Time <= "2017-11-30 22")] <- 1 #100% RH in warmer seasons
+df.trim$RH[which(df.trim$Time >= "2018-04-20 00")] <- 1
+df.trim$RH[which(df.trim$RH>=1)] <- 1 #Set truncate measurements to be realistic
+df.trim$RH[which(df.trim$RH<=0)] <- 0 #i.e. >100% = 100%, <0% = 0%
+
+
+#Remove errored temperature values
+for(i in 1:50){
+df.trim$Temp[which(df.trim$Temp>=20)] <- df.trim$Temp[(which(df.trim$Temp>=20)-length(unique(df.trim$ID)))] 
+df.trim$Temp[which(df.trim$Temp<=-6)] <- df.trim$Temp[(which(df.trim$Temp<=-6)-length(unique(df.trim$ID)))] 
+
+df.trim$RH[which(df.trim$RH<=.4)] <- df.trim$RH[(which(df.trim$RH<=.4)-length(unique(df.trim$ID)))] 
+}
+
+df.trim$RH[which(df.trim$Time >= "2017-12-15 22" & df.trim$Time <= "2018-03-15" & df.trim$Temp>=8)] <- df.trim$RH[which(df.trim$Time >= "2017-11-30 22" & df.trim$Time <= "2018-03-31" & df.trim$Temp>=9)-length(unique(df.trim$ID))]
+df.trim$Temp[which(df.trim$Time >= "2017-12-15 22" & df.trim$Time <= "2018-03-15" & df.trim$Temp>=8)] <- df.trim$Temp[which(df.trim$Time >= "2017-12-15 22" & df.trim$Time <= "2018-03-15" & df.trim$Temp>=8)-length(unique(df.trim$ID))]
+
+
+T.tormin <- 2
+
+df.microclim <- df.trim[which(df.trim$Time >= "2017-09-01 00" & df.trim$Time <= "2018-05-14 22"),]
+
+df.microclim$d.WVP.bat <- 0.611*exp(17.503*pmax(df.microclim$Temp,T.tormin)/(pmax(df.microclim$Temp,T.tormin)+240.97)) - df.microclim$RH*0.611*exp((17.503*df.microclim$Temp)/(df.microclim$Temp+240.97))
+
+df.microclim$d.WVP.a <- 0.611*exp((17.503*df.microclim$Temp)/(df.microclim$Temp+240.97)) - df.microclim$RH*0.611*exp((17.503*df.microclim$Temp)/(df.microclim$Temp+240.97))
+
+ggplot(df.microclim,aes(Time,Temp))+geom_line(aes(group=iButton,color=Depth)) +
+  theme_minimal() 
+ggplot(df.microclim,aes(Time,RH))+geom_line(aes(group=iButton,color=Depth)) + theme_minimal() + ylim(0,1)
+
+
+
+df.location$T.mean <- with(df.microclim,tapply(Temp,list(ID=ID),mean))
+df.location$T.sd <- with(df.microclim,tapply(Temp,list(ID=ID),sd))
+# df.location$T.max <- with(df.microclim,tapply(Temp,list(ID=ID),max))
+df.location$T.min <- with(df.microclim,tapply(Temp,list(ID=ID),min))
+# df.location$T.median <- with(df.microclim,tapply(Temp,list(ID=ID),median))
+# df.location$RH.mean <- with(df.microclim[which(df.microclim$Time >= "2017-12-01 00" & df.microclim$Time <= "2018-04-15 22"),],tapply(RH,list(ID=ID),mean))
+# df.location$RH.sd <- with(df.microclim[which(df.microclim$Time >= "2017-12-01 00" & df.microclim$Time <= "2018-04-15 22"),],tapply(RH,list(ID=ID),sd))
+# df.location$RH.min <- with(df.microclim[which(df.microclim$Time >= "2017-12-01 00" & df.microclim$Time <= "2018-04-15 22"),],tapply(RH,list(ID=ID),min))
+# df.location$RH.median <- with(df.microclim[which(df.microclim$Time >= "2017-12-01 00" & df.microclim$Time <= "2018-04-15 22"),],tapply(RH,list(ID=ID),median))
+# df.location$T.Sept.mean <- with(df.microclim[which(df.microclim$Time >= "2017-09-01 00" & df.microclim$Time <= "2017-09-30 22"),],tapply(Temp,list(ID=ID),mean))
+df.location$T.Sept.sd <- with(df.microclim[which(df.microclim$Time >= "2017-09-01 00" & df.microclim$Time <= "2017-09-30 22"),],tapply(Temp,list(ID=ID),sd))
+# df.location$T.Oct.mean <- with(df.microclim[which(df.microclim$Time >= "2017-10-01 00" & df.microclim$Time <= "2017-10-31 22"),],tapply(Temp,list(ID=ID),mean))
+# df.location$T.Oct.sd <- with(df.microclim[which(df.microclim$Time >= "2017-10-01 00" & df.microclim$Time <= "2017-10-31 22"),],tapply(Temp,list(ID=ID),sd))
+# df.location$T.Nov.mean <- with(df.microclim[which(df.microclim$Time >= "2017-11-01 00" & df.microclim$Time <= "2017-11-30 22"),],tapply(Temp,list(ID=ID),mean))
+# df.location$T.Nov.sd <- with(df.microclim[which(df.microclim$Time >= "2017-11-01 00" & df.microclim$Time <= "2017-11-30 22"),],tapply(Temp,list(ID=ID),sd))
+# df.location$d.WVP.a.mean <- with(df.microclim,tapply(d.WVP.a,list(ID=ID),mean))
+# df.location$d.WVP.a.sd <- with(df.microclim,tapply(d.WVP.a,list(ID=ID),sd))
+# df.location$d.WVP.a.median <- with(df.microclim,tapply(d.WVP.a,list(ID=ID),median))
+# df.location$d.WVP.a.min <- with(df.microclim,tapply(d.WVP.a,list(ID=ID),min))
+df.location$d.WVP.a.winter.mean <- with(df.microclim[which(df.microclim$Time >= "2017-12-01 00" & df.microclim$Time <= "2018-04-15 22"),],tapply(d.WVP.a,list(ID=ID),mean))
+df.location$d.WVP.a.winter.sd <- with(df.microclim[which(df.microclim$Time >= "2017-12-01 00" & df.microclim$Time <= "2018-04-15 22"),],tapply(d.WVP.a,list(ID=ID),sd))
+df.location$d.WVP.a.winter.min <- with(df.microclim[which(df.microclim$Time >= "2017-12-01 00" & df.microclim$Time <= "2018-04-15 22"),],tapply(d.WVP.a,list(ID=ID),min))
+df.location$d.WVP.a.winter.max <- with(df.microclim[which(df.microclim$Time >= "2017-12-01 00" & df.microclim$Time <= "2018-04-15 22"),],tapply(d.WVP.a,list(ID=ID),max))
+# df.location$d.WVP.bat.mean <- with(df.microclim,tapply(d.WVP.bat,list(ID=ID),mean))
+# df.location$d.WVP.a.winter.median <- with(df.microclim[which(df.microclim$Time >= "2017-12-01 00" & df.microclim$Time <= "2018-04-15 22"),],tapply(d.WVP.a,list(ID=ID),median))
+
+df.location$Elevation.scaled <- (df.location$Elevation-mean(df.location$Elevation))/sd(df.location$Elevation)
+
+
+
+
+
+```
+
+```{r shortest path}
+
+# # Calculate 3-dimensional data logger connectivity network
+
+xycoords.midpoint <- rbind(xycoords, 
+                           c("midpoint",2660,2430, (xycoords$Elevation[which(xycoords$IDs==94)] + xycoords$Elevation[which(xycoords$IDs==88)])/2),
+                           c("upper", mean(subset(xycoords$x_coord, subset = IDs %in% c(101, 103, 110, 116, 117))), mean(subset(xycoords$y_coord, subset = IDs %in% c(101, 103, 110, 116, 117))), mean(subset(xycoords$Elevation, subset = IDs %in% c(101, 103, 110, 116, 117)))),
+                           c("lower", mean(subset(xycoords$x_coord, subset = IDs %in% c(72, 74, 75, 78, 88))), mean(subset(xycoords$y_coord, subset = IDs %in% c(72, 74, 75, 78, 88))), mean(subset(xycoords$Elevation, subset = IDs %in% c(72, 74, 75, 78, 88)))),
+                           c("drum", mean(subset(xycoords$x_coord, subset = IDs %in% c(27, 31))), mean(subset(xycoords$y_coord, subset = IDs %in% c(27, 31))), mean(subset(xycoords$Elevation, subset = IDs %in% c(27, 31)))),
+                           c("out.warm",3450,1500,1670),
+                           c("out.cold",1600,2300, xycoords$Elevation[which(xycoords$IDs==40)])
+                           )
+
+
+xycoords.midpoint$x_coord <- as.numeric(as.character(xycoords.midpoint$x_coord))
+xycoords.midpoint$y_coord <- as.numeric(as.character(xycoords.midpoint$y_coord))
+xycoords.midpoint$Elevation <- as.numeric(as.character(xycoords.midpoint$Elevation))
+
+
+contacts <- read.csv("LoggerNetwork.csv")
+rownames(contacts) <- contacts[,1]
+contacts <- contacts[,-1]
+colnames(contacts) <- rownames(contacts)
+
+logger.net <- NA
+
+for(i in 1:length(contacts[1,])){
+  for(j in 1:length(contacts[,1])){
+    contacts[i,j] <- ifelse(contacts[i,j]=="NA","NA", sqrt((xycoords.midpoint$x_coord[j]-xycoords.midpoint$x_coord[i])^2 + (xycoords.midpoint$y_coord[j]-xycoords.midpoint$y_coord[i])^2 + (xycoords.midpoint$Elevation[j]-xycoords.midpoint$Elevation[i])^2))
+    
+    logger.net <- rbind(logger.net,c(rownames(contacts)[i],colnames(contacts)[j],contacts[i,j]))
+  }
+}
+logger.net <- as.data.frame(logger.net)
+colnames(logger.net) <- c("from","to","weight")
+logger.net$weight <- as.numeric(as.character(logger.net$weight))
+
+logger.net <- logger.net[-which(is.na(logger.net$weight)),]
+
+
+library(igraph)
+xycoords.midpoint$IDs <- rownames(contacts)
+xycoords.midpoint$is.MYLU <- append(df.location$is.MYLU,c(2,3,3,3,4,4))
+net <- graph.data.frame(logger.net,xycoords.midpoint,directed=F)
+xycoords.midpoint$color <- "#D98594"
+xycoords.midpoint$color[which(xycoords.midpoint$is.MYLU==1)] <- "#86C2DA"
+xycoords.midpoint$color[which(xycoords.midpoint$is.MYLU==2)] <- "red"
+xycoords.midpoint$color[which(xycoords.midpoint$is.MYLU==3)] <- "blue"
+xycoords.midpoint$color[which(xycoords.midpoint$is.MYLU==4)] <- "dark green"
+V(net)$color <- xycoords.midpoint$color
+
+plot(net, layout=as.matrix(-xycoords.midpoint[,c("x_coord","y_coord")]), 
+     edge.curved=0,
+     vertex.color=V(net)$color,
+     vertex.size=10,
+     vertex.label=NA)
+
+dist.path <- matrix(NA,ncol=ncol(contacts),nrow=nrow(contacts))
+colnames(dist.path) <- colnames(contacts)
+rownames(dist.path) <- colnames(dist.path)
+
+
+for(i in 1:nrow(dist.path)){
+  for(j in 1:ncol(dist.path)){
+    dist.path[i,j] <- distances(net,v=rownames(dist.path)[i],to=colnames(dist.path)[j])
+  }
+}
+
+for(i in 1:length(df.location$d.warm)){
+  df.location$d.warm[i] <- distances(net,v=rownames(dist.path)[i],to="out.warm")
+  df.location$d.cold[i] <- distances(net,v=rownames(dist.path)[i],to="out.cold")
+}
+
+dist.path.bats <- dist.path
+dist.path.bats <- dist.path.bats[,-which(xycoords.midpoint$is.MYLU!=3)]
+df.location$path.bats <- rep(NA, length(df.location$is.MYLU))
+for(i in 1:length(df.location$path.bats)){
+  df.location$path.bats[i] <- sum(1/dist.path.bats[i,])
+}
+plot(df.location$path.bats,df.location$is.MYLU)
+plot(df.location$d.warm,df.location$is.MYLU)
+plot(df.location$d.cold,df.location$is.MYLU)
+```
+
+
+
+```{r check selected}
+
+# # Check for significant correlation between covariates
+
+library(PerformanceAnalytics)
+
+
+# df.coor <- subset(df.location, select = c(is.MYLU,d.warm,Elevation.scaled,T.Sept.sd,T.min,RH.median))
+
+chart.Correlation(df.location,
+                  method="spearman",
+                  histogram=TRUE,
+                  pch=16)
+
+```
+
+Now, we test a "full model" with a series of covariates that reflect spatial location (distance to warm and cold entrances and elevation), microclimate statistics (temperature, relative humidity, and air water vapor pressure deficit as calculated by temperature and relative humidity), and sociality (path to bats).
+
+
+```{r full model, echo=TRUE, warning=FALSE}
+
+{
+  sink ("LogisticFull.R")
+  cat("
+      model{
+      
+      
+      #Priors
+      for(j in 1:n){
+      B[j] ~ dnorm(0,1/1000)
+      }
+      # sigma.phi ~ dunif(0,0.5)
+      # sigma.d ~ dgamma(0.001,0.001)
+      
+      
+      
+      
+      #Posteriors
+      for(i in 1:n.loggers){
+        # Full model
+                
+        # phi[i] <- max(1/(1.001+exp(-(B[1] + B[2]*d.warm[i] + B[3]*d.cold[i] + B[4]*Elevation[i] + B[5]*d.warm[i]*d.cold[i] + B[6]*d.warm[i]*Elevation[i] + B[7]*d.cold[i]*Elevation[i] + B[8]*T.mean[i] + B[9]*T.sd[i] + B[10]*T.min[i] + B[11]*T.Sept.sd[i] + B[12]*d.WVP.a.winter.mean[i] + B[13]*d.WVP.a.winter.sd[i] + B[14]*d.WVP.a.winter.min[i] + B[15]*d.WVP.a.winter.max[i] + B[16]*T.mean[i]^2 + B[17]*d.WVP.a.winter.mean[i]^2 + B[18]*T.mean[i]*d.WVP.a.winter.mean[i] + B[19]*d.warm[i]*d.cold[i]*Elevation[i] + B[20]*path.bats[i]))), 0.001)
+        
+        # Reduction
+        phi[i] <- max(1/(1.001+exp(-(B[1] + B[2]*T.mean[i] + B[3]*T.Sept.sd[i] + B[4]*path.bats[i]))), 0.001)
+        
+        y[i] ~ dbern(phi[i])
+      }
+    
+      
+      }
+      ", fill=TRUE)
+  sink()
+}
+
+
+```
+
+
+```{r input data, warning=FALSE}
+#Data and initial values
+
+n <- 4
+df.location.scaled <- df.location
+for(i in 2:length(df.location[1,])){
+  df.location.scaled[,i] <- (df.location[,i]-mean(df.location[,i]))/sd(df.location[,i])
+}
+
+df.location.scaled$is.MYLU <- df.location$is.MYLU
+
+
+
+data = list(
+  n = n,
+  n.loggers = length(unique(df.microclim$ID)),
+  y = df.location$is.MYLU,
+  d.warm = df.location.scaled$d.warm,
+  d.cold = df.location.scaled$d.cold,
+  Elevation = df.location.scaled$Elevation,
+  T.mean = df.location.scaled$T.mean,
+  T.median = df.location.scaled$T.median,
+  T.max = df.location.scaled$T.max,
+  T.min = df.location.scaled$T.min,
+  T.sd = df.location.scaled$T.sd,
+  T.Sept.mean = df.location.scaled$T.Sept.mean,
+  T.Sept.sd = df.location.scaled$T.Sept.sd,
+  d.WVP.a.winter.mean = df.location.scaled$d.WVP.a.winter.mean,
+  d.WVP.a.winter.sd = df.location.scaled$d.WVP.a.winter.sd,
+  d.WVP.a.winter.min = df.location.scaled$d.WVP.a.winter.min,
+  d.WVP.a.winter.max = df.location.scaled$d.WVP.a.winter.max,
+  d.WVP.bat.mean = df.location.scaled$d.WVP.bat.mean,
+  path.bats = df.location.scaled$path.bats
+)
+
+inits = list(
+  list(
+    B = rep(0,(n))
+  ),
+  list(
+    B = rep(0.2,(n))
+  )
+)
+
+n.adapt=10000
+n.update=20000
+n.iter=20000
+
+jm=jags.model("LogisticFull.R",data=data, inits=inits,n.chains=length(inits),n.adapt=n.adapt)
+update(jm,n.iter=n.update)
+zm=coda.samples(jm, variable.names=c("B"),n.iter=n.iter,n.thin=10)
+
+zj=jags.samples(jm, variable.names=c("phi",
+                                     "B"),n.iter=n.iter,n.thin=10)
+
+# plot(zm)
+summary(zm)
+dic <- dic.samples(jm, n.iter=20000, thin=10, type="pD")
+dic
+
+
+
+df.results <- df.location
+df.results$mu.mean <- summary(zj$phi, mean)$stat
+df.results$mu.low <- summary(zj$phi, quantile, 0.025)$stat
+df.results$mu.high <- summary(zj$phi, quantile, 0.975)$stat
+
+# ggplot(df.results) + theme_classic() +
+#   geom_point(aes(T.Sept.sd,is.MYLU)) +
+#   geom_point(aes(T.Sept.sd,mu.mean),color="sky blue") +
+#   geom_errorbar(aes(x=T.Sept.sd,ymin=mu.low,ymax=mu.high), color="sky blue")
+# 
+# ggplot(df.results) + theme_classic() +
+#   geom_point(aes(path.bats,is.MYLU)) +
+#   geom_point(aes(path.bats,mu.mean),color="sky blue") +
+#   geom_errorbar(aes(x=path.bats,ymin=mu.low,ymax=mu.high), color="sky blue")
+```
+
+
+We can see that the model has descriptive capability, and we can test its predictive capability using within-sample predictions, removing three samples at a time and predicting their probability of bat occurrence given parameters estimated for other sites.
+
+```{r full model with within sample pred, echo=TRUE, warning=FALSE}
+
+{
+  sink ("LogisticFullPred.R")
+  cat("
+      model{
+      
+      
+      #Priors
+      for(j in 1:n){
+      B[j] ~ dnorm(0,1/1000)
+      }
+      
+      
+      #Posteriors
+      for(i in 1:n.loggers){
+      
+        mu[i] <- max(1/(1.001+exp(-(B[1] + B[2]*d.warm[i] + B[3]*d.cold[i] + B[4]*Elevation[i] + B[5]*d.warm[i]*d.cold[i] + B[6]*d.warm[i]*Elevation[i] + B[7]*d.cold[i]*Elevation[i] + B[8]*T.mean[i] + B[9]*T.sd[i] + B[10]*T.min[i] + B[11]*T.Sept.sd[i] + B[12]*d.WVP.a.winter.mean[i] + B[13]*d.WVP.a.winter.sd[i] + B[14]*d.WVP.a.winter.min[i] + B[15]*d.WVP.a.winter.max[i] + B[16]*T.mean[i]^2 + B[17]*d.WVP.a.winter.mean[i]^2 + B[18]*T.mean[i]*d.WVP.a.winter.mean[i] + B[19]*d.warm[i]*d.cold[i]*Elevation[i] + B[20]*path.bats[i]))), 0.001)
+        
+        
+        
+        y[i] ~ dbern(mu[i])
+      }
+      
+      #Predictions
+      for(i in 1:n.loggers.pred){
+      
+        mu.pred[i] <- max(1/(1.001+exp(-(B[1] + B[2]*d.warm.pred[i] + B[3]*d.cold.pred[i] + B[4]*Elevation.pred[i] + B[5]*d.warm.pred[i]*d.cold.pred[i] + B[6]*d.warm.pred[i]*Elevation.pred[i] + B[7]*d.cold.pred[i]*Elevation.pred[i] + B[8]*T.mean.pred[i] + B[9]*T.sd.pred[i] + B[10]*T.min.pred[i] + B[11]*T.Sept.sd.pred[i] + B[12]*d.WVP.a.winter.mean.pred[i] + B[13]*d.WVP.a.winter.sd.pred[i] + B[14]*d.WVP.a.winter.min.pred[i] + B[15]*d.WVP.a.winter.max.pred[i] + B[16]*T.mean.pred[i]^2 + B[17]*d.WVP.a.winter.mean.pred[i]^2 + B[18]*T.mean.pred[i]*d.WVP.a.winter.mean.pred[i] + B[19]*d.warm.pred[i]*d.cold.pred[i]*Elevation.pred[i] + B[20]*path.bats.pred[i]))), 0.001)
+        
+        
+        
+        y.pred[i] ~ dbern(mu.pred[i])
+      }
+      
+      }
+      ", fill=TRUE)
+  sink()
+}
+
+
+```
+
+```{r Within-sample predictions, warning=FALSE, message=FALSE, error=FALSE, include=FALSE}
+library(rjags)
+
+n <- 34
+
+predict.residuals <- NA
+
+
+for(i in 1:100){
+
+  #Establish which data points are used for prediction/which are predicted
+  x <- sort(sample(1:length(unique(df.location$iButton)),3,replace=FALSE))
+
+  df.temp <- df.location.scaled[-x,]
+  df.pred <- df.location.scaled[x,]
+
+  #Complete anaysis and compare results
+
+
+
+data = list(
+  n = n,
+  n.loggers = length(unique(df.temp$iButton)),
+  y = df.temp$is.MYLU,
+  d.warm = df.temp$d.warm,
+  d.cold = df.temp$d.cold,
+  Elevation = df.temp$Elevation,
+  T.mean = df.temp$T.mean,
+  T.median = df.temp$T.median,
+  T.max = df.temp$T.max,
+  T.min = df.temp$T.min,
+  T.sd = df.temp$T.sd,
+  RH.mean = df.temp$RH.mean,
+  RH.sd = df.temp$RH.sd,
+  RH.min = df.temp$RH.min,
+  RH.median = df.temp$RH.median,
+  T.Sept.mean = df.temp$T.Sept.mean,
+  T.Sept.sd = df.temp$T.Sept.sd,
+  T.Oct.mean = df.temp$T.Oct.mean,
+  T.Oct.sd = df.temp$T.Oct.sd,
+  T.Nov.mean = df.temp$T.Nov.mean,
+  T.Nov.sd = df.temp$T.Nov.sd,
+  d.WVP.a.mean = df.temp$d.WVP.a.mean,
+  d.WVP.a.sd = df.temp$d.WVP.a.sd,
+  d.WVP.a.median = df.temp$d.WVP.a.median,
+  d.WVP.a.min = df.temp$d.WVP.a.min,
+  d.WVP.a.winter.mean = df.temp$d.WVP.a.winter.mean,
+  d.WVP.a.winter.sd = df.temp$d.WVP.a.winter.sd,
+  d.WVP.a.winter.median = df.temp$d.WVP.a.winter.median,
+  d.WVP.a.winter.min = df.temp$d.WVP.a.winter.min,
+  d.WVP.a.winter.max = df.temp$d.WVP.a.winter.max,
+  path.bats = df.temp$path.bats,
+  n.loggers.pred = length(unique(df.pred$iButton)),
+  d.warm.pred = df.pred$d.warm,
+  d.cold.pred = df.pred$d.cold,
+  Elevation.pred = df.pred$Elevation,
+  T.mean.pred = df.pred$T.mean,
+  T.median.pred = df.pred$T.median,
+  T.max.pred = df.pred$T.max,
+  T.min.pred = df.pred$T.min,
+  T.sd.pred = df.pred$T.sd,
+  RH.mean.pred = df.pred$RH.mean,
+  RH.sd.pred = df.pred$RH.sd,
+  RH.min.pred = df.pred$RH.min,
+  RH.median.pred = df.pred$RH.median,
+  T.Sept.mean.pred = df.pred$T.Sept.mean,
+  T.Sept.sd.pred = df.pred$T.Sept.sd,
+  T.Oct.mean.pred = df.pred$T.Oct.mean,
+  T.Oct.sd.pred = df.pred$T.Oct.sd,
+  T.Nov.mean.pred = df.pred$T.Nov.mean,
+  T.Nov.sd.pred = df.pred$T.Nov.sd,
+  d.WVP.a.mean.pred = df.pred$d.WVP.a.mean,
+  d.WVP.a.sd.pred = df.pred$d.WVP.a.sd,
+  d.WVP.a.median.pred = df.pred$d.WVP.a.median,
+  d.WVP.a.min.pred = df.pred$d.WVP.a.min,
+  d.WVP.a.winter.mean.pred = df.pred$d.WVP.a.winter.mean,
+  d.WVP.a.winter.sd.pred = df.pred$d.WVP.a.winter.sd,
+  d.WVP.a.winter.median.pred = df.pred$d.WVP.a.winter.median,
+  d.WVP.a.winter.min.pred = df.pred$d.WVP.a.winter.min,
+  d.WVP.a.winter.max.pred = df.pred$d.WVP.a.winter.max,
+  d.WVP.bat.mean.pred = df.pred$d.WVP.bat.mean,
+  path.bats.pred = df.pred$path.bats
+)
+
+inits = list(
+  list(
+    B = rep(0,(n))
+  ),
+  list(
+    B = rep(0.2,(n))
+  )
+)
+
+n.adapt=10000
+n.update=20000
+n.iter=20000
+
+jm=jags.model("LogisticFullPred.R",data=data, inits=inits,n.chains=length(inits),n.adapt=n.adapt)
+update(jm,n.iter=n.update)
+# zm=coda.samples(jm, variable.names=c("sigma",
+#                                                  "B"),n.iter=n.iter,n.thin=10)
+
+zj=jags.samples(jm, variable.names=c("B",
+                                     "mu",
+                                     "mu.pred",
+                                     "y.pred"),n.iter=n.iter,n.thin=10,
+                quiet=TRUE)
+
+# plot(zm)
+# summary(zm)
+# dic <- dic.samples(jm, n.iter=20000, thin=10, type="pD")
+# dic
+
+
+
+df.results <- df.temp
+df.results$mu.mean <- summary(zj$mu, mean)$stat
+df.results$mu.low <- summary(zj$mu, quantile, 0.025)$stat
+df.results$mu.high <- summary(zj$mu, quantile, 0.975)$stat
+df.results.pred <- df.pred
+df.results.pred$mu.pred.mean <- summary(zj$mu.pred, mean)$stat
+df.results.pred$mu.pred.low <- summary(zj$mu.pred, quantile, 0.025)$stat
+df.results.pred$mu.pred.high <- summary(zj$mu.pred, quantile, 0.975)$stat
+df.results.pred$y.pred.mean <- summary(zj$y.pred, mean)$stat
+
+
+
+  predict.residuals <- rbind(predict.residuals,cbind(df.results.pred,x))
+
+}
+
+
+ p <- ggplot(df.results) + theme_classic() +
+  geom_point(aes(path.bats,is.MYLU), size=2) +
+  geom_point(aes(path.bats,mu.mean),color="sky blue") +
+  geom_errorbar(aes(x=path.bats,ymin=mu.low,ymax=mu.high), width=0.1, color="sky blue") +
+  geom_point(data=df.results.pred, aes(path.bats,is.MYLU), size=2) +
+  geom_point(data=df.results.pred, aes(path.bats,mu.pred.mean),color="red") +
+  geom_errorbar(data=df.results.pred, aes(x=path.bats,ymin=mu.pred.low,ymax=mu.pred.high), width=0.1, color="red") +
+  geom_point(data=df.results.pred, aes(path.bats,y.pred.mean),color="pink") +
+  ggtitle("Full data set regression")
+
+predict.residuals <- predict.residuals[-1,]
+predict.residuals$iButton <- as.character(predict.residuals$iButton)
+
+
+
+```
+
+```{r plot output}
+print(p)
+```
+
+
+
+
+```{r sources of error ful model}
+mean.pred.1 <- mean(predict.residuals$mu.pred.mean[which(predict.residuals$is.MYLU==1)])
+mean.pred.0 <- mean(predict.residuals$mu.pred.mean[which(predict.residuals$is.MYLU==0)])
+"Mean probability of occurrence for sites with known presence"
+mean.pred.1
+"Mean probability of occurrence for sites with known absence"
+mean.pred.0
+
+"Mean lower and upper credible interval for probability of occurrence in sites with known presence"
+range.1.low <- mean( predict.residuals$mu.pred.low[which(predict.residuals$is.MYLU==1)])
+range.1.high <- mean(predict.residuals$mu.pred.high[which(predict.residuals$is.MYLU==1)])
+c(range.1.low,range.1.high)
+"Mean lower and upper credible interval for probability of occurrence in sites with known presence"
+range.0.low <- mean( predict.residuals$mu.pred.low[which(predict.residuals$is.MYLU==0)])
+range.0.high <- mean(predict.residuals$mu.pred.high[which(predict.residuals$is.MYLU==0)])
+c(range.0.low,range.0.high)
+
+ggplot(predict.residuals[which(predict.residuals$is.MYLU==1),]) + theme_classic() +
+  geom_violin(aes(as.factor(iButton), mu.pred.mean), fill="gold", scale="width") +
+  geom_jitter(aes(iButton,mu.pred.mean)) + ggtitle("Mean predicted probability of occurence for known presence")
+
+ggplot(predict.residuals[which(predict.residuals$is.MYLU==0),]) + theme_classic() +
+  geom_violin(aes(as.factor(iButton), mu.pred.mean), fill="lavender", scale="width") +
+  geom_jitter(aes(iButton,mu.pred.mean)) + ggtitle("Mean predicted probability of occurence for known absence")
+```
+
+Next we perform backwards selection by running the model and removing the least significant element for each iteration. We kept track of significant values, directionality of significance, and DIC (mean and penalized) in an excel file. Below I present the selected model.
+
+
+```{r bayesian logistic regression backward selection, echo=TRUE, warning=FALSE}
+
+{
+  sink ("LogisticBack.R")
+  cat("
+      model{
+      
+      
+      #Priors
+      for(j in 1:n){
+      B[j] ~ dnorm(0,1/1000)
+      }
+      
+      
+      #Posteriors
+      for(i in 1:n.loggers){
+      
+        mu[i] <- max(1/(1.0000001+exp(-(B[1] + B[2]*d.warm[i] + B[3]*T.mean[i] + B[4]*T.Sept.sd[i] + B[5]*path.bats[i]))), 0.0000001)
+        
+        
+        
+        y[i] ~ dbern(mu[i])
+      }
+    
+      
+      }
+      ", fill=TRUE)
+  sink()
+}
+
+
+```
+
+```{r input data backward selection, warning=FALSE, message=FALSE}
+#Data and initial values
+library(rjags)
+
+n <- 5
+df.location.scaled <- df.location
+for(i in 2:length(df.location[1,])){
+  df.location.scaled[,i] <- (df.location[,i]-mean(df.location[,i]))/sd(df.location[,i])
+}
+
+df.location.scaled$is.MYLU <- df.location$is.MYLU
+
+T.results <- read.csv("T.results.csv")
+
+# # Use predicted mean temperature from hierarchical model as input
+setwd("C:/Users/bengo/Documents/WNS/2017Barton/Output")
+load('Predict.jags.211018.WithMASTCrossCorr.rda')
+T.mean.pred <- summary(zj$T.mean.pred, mean)$stat
+setwd("C:/Users/bengo/Documents/WNS/2017Barton")
+
+setwd("C:/Users/bengo/Documents/WNS/2017Barton/Output")
+load('MixedMASTAir.jags.rda')
+T.Sept.sd.pred <- summary(zj$T.Sept.sd.pred, mean)$stat
+setwd("C:/Users/bengo/Documents/WNS/2017Barton")
+
+data = list(
+  n = n,
+  n.loggers = length(unique(df.microclim$ID)),
+  y = df.location$is.MYLU,
+  d.warm = df.location.scaled$d.warm,
+  d.cold = df.location.scaled$d.cold,
+  Elevation = df.location.scaled$Elevation,
+  # T.mean = df.location.scaled$T.mean,
+  # T.mean = T.results$mean.Prediction,
+  T.mean = (T.mean.pred-mean(T.mean.pred))/sd(T.mean.pred),
+  T.median = df.location.scaled$T.median,
+  T.max = df.location.scaled$T.max,
+  T.min = df.location.scaled$T.min,
+  T.sd = df.location.scaled$T.sd,
+  T.Sept.mean = df.location.scaled$T.Sept.mean,
+  # T.Sept.sd = df.location.scaled$T.Sept.sd,
+  # T.Sept.sd = T.results$Sept.sd.Prediction,
+  T.Sept.sd = (T.Sept.sd.pred-mean(T.Sept.sd.pred))/sd(T.Sept.sd.pred),
+  d.WVP.a.winter.mean = df.location.scaled$d.WVP.a.winter.mean,
+  d.WVP.a.winter.sd = df.location.scaled$d.WVP.a.winter.sd,
+  d.WVP.a.winter.min = df.location.scaled$d.WVP.a.winter.min,
+  d.WVP.a.winter.max = df.location.scaled$d.WVP.a.winter.max,
+  d.WVP.bat.mean = df.location.scaled$d.WVP.bat.mean,
+  path.bats = df.location.scaled$path.bats
+)
+
+inits = list(
+  list(
+    B = rep(0,(n))
+  ),
+  list(
+    B = rep(-0.2,(n))
+  )
+)
+
+n.adapt=10000
+n.update=20000
+n.iter=20000
+
+jm=jags.model("LogisticBack.R",data=data, inits=inits,n.chains=length(inits),n.adapt=n.adapt)
+update(jm,n.iter=n.update)
+zm=coda.samples(jm, variable.names=c("B"),n.iter=n.iter,n.thin=10)
+
+plot(zm)
+summary(zm)
+dic <- dic.samples(jm, n.iter=20000, thin=10, type="pD")
+dic
+
+
+zj=jags.samples(jm, variable.names=c("B",
+                                                 "mu"),n.iter=n.iter,n.thin=10)
+zj.data <- zj
+save(zj.data, file="LogisticDataOutput211120.rda")
+
+df.results <- df.location
+df.results$mu.mean <- summary(zj$mu, mean)$stat
+df.results$mu.low <- summary(zj$mu, quantile, 0.025)$stat
+df.results$mu.high <- summary(zj$mu, quantile, 0.975)$stat
+
+ggplot(df.results) + theme_classic() +
+  geom_point(aes(path.bats,is.MYLU)) +
+  geom_point(aes(path.bats,mu.mean),color="sky blue") +
+  geom_text(aes(path.bats,as.numeric(as.character(iButton))*.01, label=iButton)) +
+  geom_errorbar(aes(x=path.bats,ymin=mu.low,ymax=mu.high), color="sky blue")
+```
+
+Finally, we perform k-fold cross validation to show the selected model's predictive capabilities.
+
+```{r selected model with within sample pred, echo=TRUE, warning=FALSE}
+
+{
+  sink ("LogisticSelectedPred.R")
+  cat("
+      model{
+      
+      
+      #Priors
+      for(j in 1:n){
+      B[j] ~ dnorm(0,1/10000)
+      }
+      
+      
+      #Posteriors
+      for(i in 1:n.loggers){
+      
+        mu[i] <- max(1/(1.0000001+exp(-(B[1] + B[2]*d.warm[i] + B[3]*T.mean[i] + B[4]*T.Sept.sd[i] + B[5]*path.bats[i]))), 0.0000001)
+        
+        
+        
+        y[i] ~ dbern(mu[i])
+      }
+      
+      #Predictions
+      for(i in 1:n.loggers.pred){
+      
+        mu.pred[i] <- max(1/(1.0000001+exp(-(B[1] + B[2]*d.warm.pred[i] + B[3]*T.mean.pred[i] + B[4]*T.Sept.sd.pred[i] + B[5]*path.bats.pred[i]))), 0.0000001)
+        
+        
+        
+        y.pred[i] ~ dbern(mu.pred[i])
+      }
+      
+      }
+      ", fill=TRUE)
+  sink()
+}
+
+
+```
+
+```{r selected model Within-sample predictions, include=FALSE, warning=FALSE, message=FALSE, error=FALSE}
+library(rjags)
+
+n <- 5
+
+predict.residuals <- NA
+
+
+for(i in 1:500){
+  
+  #Establish which data points are used for prediction/which are predicted
+  x <- sort(sample(1:length(unique(df.location$iButton)),3,replace=FALSE))
+  
+  df.temp <- df.location.scaled[-x,]
+  df.pred <- df.location.scaled[x,]
+  
+  #Complete anaysis and compare results
+
+
+
+data = list(
+  n = n,
+  n.loggers = length(unique(df.temp$iButton)),
+  y = df.temp$is.MYLU,
+  d.warm = df.temp$d.warm,
+  d.cold = df.temp$d.cold,
+  Elevation.scaled = df.temp$Elevation.scaled,
+  T.mean = df.temp$T.mean,
+  T.median = df.temp$T.median,
+  T.max = df.temp$T.max,
+  T.min = df.temp$T.min,
+  T.sd = df.temp$T.sd,
+  RH.mean = df.temp$RH.mean,
+  RH.sd = df.temp$RH.sd,
+  RH.min = df.temp$RH.min,
+  RH.median = df.temp$RH.median,
+  T.Sept.mean = df.temp$T.Sept.mean,
+  T.Sept.sd = df.temp$T.Sept.sd,
+  T.Oct.mean = df.temp$T.Oct.mean,
+  T.Oct.sd = df.temp$T.Oct.sd,
+  T.Nov.mean = df.temp$T.Nov.mean,
+  T.Nov.sd = df.temp$T.Nov.sd,
+  d.WVP.a.mean = df.temp$d.WVP.a.mean,
+  d.WVP.a.sd = df.temp$d.WVP.a.sd,
+  d.WVP.a.median = df.temp$d.WVP.a.median,
+  d.WVP.a.min = df.temp$d.WVP.a.min,
+  d.WVP.a.winter.mean = df.temp$d.WVP.a.winter.mean,
+  d.WVP.a.winter.sd = df.temp$d.WVP.a.winter.sd,
+  d.WVP.a.winter.median = df.temp$d.WVP.a.winter.median,
+  path.bats = df.temp$path.bats,
+  n.loggers.pred = length(unique(df.pred$iButton)),
+  d.warm.pred = df.pred$d.warm,
+  d.cold.pred = df.pred$d.cold,
+  Elevation.scaled.pred = df.pred$Elevation.scaled,
+  T.mean.pred = df.pred$T.mean,
+  T.median.pred = df.pred$T.median,
+  T.max.pred = df.pred$T.max,
+  T.min.pred = df.pred$T.min,
+  T.sd.pred = df.pred$T.sd,
+  RH.mean.pred = df.pred$RH.mean,
+  RH.sd.pred = df.pred$RH.sd,
+  RH.min.pred = df.pred$RH.min,
+  RH.median.pred = df.pred$RH.median,
+  T.Sept.mean.pred = df.pred$T.Sept.mean,
+  T.Sept.sd.pred = df.pred$T.Sept.sd,
+  T.Oct.mean.pred = df.pred$T.Oct.mean,
+  T.Oct.sd.pred = df.pred$T.Oct.sd,
+  T.Nov.mean.pred = df.pred$T.Nov.mean,
+  T.Nov.sd.pred = df.pred$T.Nov.sd,
+  d.WVP.a.mean.pred = df.pred$d.WVP.a.mean,
+  d.WVP.a.sd.pred = df.pred$d.WVP.a.sd,
+  d.WVP.a.median.pred = df.pred$d.WVP.a.median,
+  d.WVP.a.min.pred = df.pred$d.WVP.a.min,
+  d.WVP.a.winter.mean.pred = df.pred$d.WVP.a.winter.mean,
+  d.WVP.a.winter.sd.pred = df.pred$d.WVP.a.winter.sd,
+  d.WVP.a.winter.median.pred = df.pred$d.WVP.a.winter.median,
+  d.WVP.bat.mean.pred = df.pred$d.WVP.bat.mean,
+  path.bats.pred = df.pred$path.bats
+)
+
+inits = list(
+  list(
+    B = rep(0,(n))
+  ),
+  list(
+    B = rep(0.2,(n))
+  )
+)
+
+n.adapt=10000
+n.update=20000
+n.iter=20000
+
+jm=jags.model("LogisticSelectedPred.R",data=data, inits=inits,n.chains=length(inits),n.adapt=n.adapt)
+update(jm,n.iter=n.update)
+# zm=coda.samples(jm, variable.names=c("sigma",
+#                                                  "B"),n.iter=n.iter,n.thin=10)
+
+zj=jags.samples(jm, variable.names=c("B",
+                                     "mu",
+                                     "mu.pred",
+                                     "y.pred"),n.iter=n.iter,n.thin=10,
+                quiet=TRUE)
+
+# plot(zm)
+# summary(zm)
+# dic <- dic.samples(jm, n.iter=20000, thin=10, type="pD")
+# dic
+
+
+
+df.results <- df.temp
+df.results$mu.mean <- summary(zj$mu, mean)$stat
+df.results$mu.low <- summary(zj$mu, quantile, 0.025)$stat
+df.results$mu.high <- summary(zj$mu, quantile, 0.975)$stat
+df.results.pred <- df.pred
+df.results.pred$mu.pred.mean <- summary(zj$mu.pred, mean)$stat
+df.results.pred$mu.pred.low <- summary(zj$mu.pred, quantile, 0.025)$stat
+df.results.pred$mu.pred.high <- summary(zj$mu.pred, quantile, 0.975)$stat
+df.results.pred$y.pred.mean <- summary(zj$y.pred, mean)$stat
+
+
+
+  predict.residuals <- rbind(predict.residuals,cbind(df.results.pred,x))
+  
+}
+
+
+ p <- ggplot(df.results) + theme_classic() +
+  geom_point(aes(d.warm,is.MYLU), size=2) +
+  geom_point(aes(d.warm,mu.mean),color="sky blue") +
+  geom_errorbar(aes(x=d.warm,ymin=mu.low,ymax=mu.high), width=0.1, color="sky blue") +
+  geom_point(data=df.results.pred, aes(d.warm,is.MYLU), size=2) +
+  geom_point(data=df.results.pred, aes(d.warm,mu.pred.mean),color="red") +
+  geom_errorbar(data=df.results.pred, aes(x=d.warm,ymin=mu.pred.low,ymax=mu.pred.high), width=0.1, color="red") +
+  geom_point(data=df.results.pred, aes(d.warm,y.pred.mean),color="pink") +
+  ggtitle("Full data set regression")
+# print(p)
+
+predict.residuals <- predict.residuals[-1,]
+predict.residuals$iButton <- as.character(predict.residuals$iButton)
+
+write.csv(predict.residuals, "LogisticOutSamplePreds.csv")
+
+```
+
+```{r selected example plot}
+print(p)
+```
+
+
+```{r selected model sources of error}
+mean.pred.1 <- mean(predict.residuals$mu.pred.mean[which(predict.residuals$is.MYLU==1)])
+mean.pred.0 <- mean(predict.residuals$mu.pred.mean[which(predict.residuals$is.MYLU==0)])
+"Mean probability of occurrence for sites with known presence"
+mean.pred.1
+"Mean probability of occurrence for sites with known absence"
+mean.pred.0
+
+"Mean lower and upper credible interval for probability of occurrence in sites with known presence"
+range.1.low <- mean( predict.residuals$mu.pred.low[which(predict.residuals$is.MYLU==1)])
+range.1.high <- mean(predict.residuals$mu.pred.high[which(predict.residuals$is.MYLU==1)])
+c(range.1.low,range.1.high)
+"Mean lower and upper credible interval for probability of occurrence in sites with known presence"
+range.0.low <- mean( predict.residuals$mu.pred.low[which(predict.residuals$is.MYLU==0)])
+range.0.high <- mean(predict.residuals$mu.pred.high[which(predict.residuals$is.MYLU==0)])
+c(range.0.low,range.0.high)
+
+ggplot(predict.residuals[which(predict.residuals$is.MYLU==1),]) + theme_classic() +  
+  geom_violin(aes(as.factor(iButton), mu.pred.mean), fill="gold", scale="width") +
+  geom_jitter(aes(iButton,mu.pred.mean)) + ggtitle("Mean predicted probability of occurence for known presence")
+
+ggplot(predict.residuals[which(predict.residuals$is.MYLU==0),]) + theme_classic() + 
+  geom_violin(aes(as.factor(iButton), mu.pred.mean), fill="lavender", scale="width") +
+  geom_jitter(aes(iButton,mu.pred.mean)) + ggtitle("Mean predicted probability of occurence for known absence")
+```
+
